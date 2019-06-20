@@ -20,7 +20,7 @@ version: 0.1.0
 
 ## Limitation
 
-1. Compaction can not used to delta table which will be operated by upsert/delete  
+1. Compaction can not be applied to delta table which will be operated by upsert/delete action.  
 
 ## Usage
 
