@@ -59,7 +59,8 @@ val items = optimizeTableInDelta.run(df.sparkSession)
 MLSQL:
 
 ```sql
--- multi mysql table sync ,can only be used in stream
+-- binlogRate can be used to as the sinker of spark binlog datasource.
+-- It supports multi table sync at one time.
 save append table1  
 as binlogRate.`/tmp/binlog1/{db}/{table}` 
 options mode="Append"
