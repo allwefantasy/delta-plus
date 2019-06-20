@@ -1,4 +1,4 @@
-# Spark MySQL Binlog Library
+# Delta Plus
 
 A library based on delta for Spark and [MLSQL](http://www.mlsql.tech).
   
