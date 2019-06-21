@@ -99,6 +99,13 @@
         </dependency>
 
         <dependency>
+            <groupId>org.pegdown</groupId>
+            <artifactId>pegdown</artifactId>
+            <version>1.6.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.spark</groupId>
             <artifactId>spark-graphx_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
