@@ -41,6 +41,10 @@ df.readStream.format("org.apache.spark.sql.delta.sources.MLSQLDeltaDataSource").
 
 ```
 
+when `idCols` and `operation` is not configured, then we will execute normal Append/Overwrite operation.
+If you have `idCols` setup, then it will execute upsert operation. 
+If you have `idCols`, `operation` both setup and operation equal to `delete`, then it will delete table records in df.
+
 Spark Code:
 
 ```scala
