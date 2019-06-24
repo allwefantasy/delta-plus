@@ -4,9 +4,9 @@ import org.apache.hadoop.fs.{FileStatus, Path}
 import org.apache.spark.sql.delta.actions.{Action, AddFile, RemoveFile}
 import org.apache.spark.sql.delta.schema.{DeltaInvariantCheckerExec, ImplicitMetadataOperation, Invariants}
 import org.apache.spark.sql.delta.{DeltaConcurrentModificationException, _}
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.FileFormatWriter
-import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.{Dataset, Row, SparkSession, functions => F}
 import tech.mlsql.common.PathFun
 
@@ -19,7 +19,7 @@ import scala.collection.mutable.ArrayBuffer
   *
   * 1. There is at least one checkpoint have been generated.
   * 2. The target delta table should be written
-  *    by SaveMode.Append(Batch) or OutputMode.Append(Stream)
+  * by SaveMode.Append(Batch) or OutputMode.Append(Stream)
   * 3. The target delta table should not operated by upsert/delete action.
   *
   * @param deltaLog
@@ -35,7 +35,7 @@ case class CompactTableInDelta(
                               )
   extends RunnableCommand
     with ImplicitMetadataOperation
-    with DeltaCommand with DeltaCommandsFun{
+    with DeltaCommand with DeltaCommandsFun {
 
   import CompactTableInDelta._
 
@@ -73,13 +73,14 @@ case class CompactTableInDelta(
     // The transaction should not take too long, so we should generated
     // the new files firstly, and then try to start a transaction and commit,
     // once fails, try again until compactRetryTimesForLock times.
-    // In the transaction, we only commit some infromations(AddFiles/RemoveFiles)
+    // In the transaction, we only commit some information(AddFiles/RemoveFiles)
     // So it will not affect the other program to write data.
     val (actions, version) = optimize(sparkSession, false)
 
     while (!success && compactRetryTimesForLock > 0) {
       try {
         deltaLog.withNewTransaction { txn =>
+          txn.readWholeTable()
           val operation = DeltaOperations.Optimize(Seq(), Seq(), 0, false)
           txn.commit(actions, operation)
           success = true
