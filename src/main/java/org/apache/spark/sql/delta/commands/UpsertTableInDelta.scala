@@ -37,6 +37,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
     saveMode match {
       case Some(mode) =>
         deltaLog.withNewTransaction { txn =>
+          txn.readWholeTable()
           actions = upsert(txn, sparkSession)
           val operation = DeltaOperations.Write(SaveMode.Overwrite,
             Option(partitionColumns),
@@ -53,6 +54,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
           }
 
           val txn = deltaLog.startTransaction()
+          txn.readWholeTable()
           // Streaming sinks can't blindly overwrite schema.
           // See Schema Management design doc for details
           updateMetadata(

@@ -24,7 +24,7 @@ version: 0.1.0
 
 ## Usage
 
-We have aready added upsert/delete/compaction features for delta 0.2.0.
+We have already added Upsert/Delete/Compaction features for delta 0.2.0.
 
 DataSource API:
 
@@ -42,10 +42,10 @@ df.readStream.format("org.apache.spark.sql.delta.sources.MLSQLDeltaDataSource").
 ```
 
 when `idCols` and `operation` is not configured, then we will execute normal Append/Overwrite operation.
-If you have `idCols` setup, then it will execute upsert operation. 
+If you have `idCols` setup, then it will execute Upsert operation. 
 If you have `idCols`, `operation` both setup and operation equal to `delete`, then it will delete table records in df.
 
-Spark Code:
+Spark Code for Compaction:
 
 ```scala
 
@@ -60,7 +60,7 @@ val items = optimizeTableInDelta.run(df.sparkSession)
 ```
 
 
-MLSQL:
+MLSQL Code for binlog sync:
 
 ```sql
 -- binlogRate can be used to as the sinker of spark binlog datasource.
@@ -76,6 +76,9 @@ and checkpointLocation="/tmp/cpl-binlog2";
 load delta.`/tmp/table1` as table1;
 
 ```  
+
+`binlogRate` is a new datasource which can write multi delta table from [binlog table](https://github.com/allwefantasy/spark-binlog) in stream job.
+It can only be used in MLSQL for now. 
 
 [MLSQL Example](http://docs.mlsql.tech/en/guide/stream/binlog.html) 
 
