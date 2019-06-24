@@ -24,7 +24,7 @@ version: 0.1.0
 
 ## Usage
 
-We have aready added upsert/delete/compaction features for delta 0.1.0.
+We have aready added upsert/delete/compaction features for delta 0.2.0.
 
 DataSource API:
 
