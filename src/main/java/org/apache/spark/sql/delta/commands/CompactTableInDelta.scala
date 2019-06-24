@@ -73,7 +73,7 @@ case class CompactTableInDelta(
     // The transaction should not take too long, so we should generated
     // the new files firstly, and then try to start a transaction and commit,
     // once fails, try again until compactRetryTimesForLock times.
-    // In the transaction, we only commit some infromations(AddFiles/RemoveFiles)
+    // In the transaction, we only commit some information(AddFiles/RemoveFiles)
     // So it will not affect the other program to write data.
     val (actions, version) = optimize(sparkSession, false)
 
