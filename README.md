@@ -58,6 +58,15 @@ val optimizeTableInDelta = CompactTableInDelta(log,
 val items = optimizeTableInDelta.run(df.sparkSession)
 
 ```
+MLSQL Code for Compaction:
+
+```sql
+-- compact table1 files before version 10, and make 
+-- sure every partition only have one file
+!delta compact /delta/table1 10 1;
+```
+
+You can use `!delta history /delta/table1;` to get the history of the table.
 
 
 MLSQL Code for binlog sync:
