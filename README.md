@@ -2,6 +2,8 @@
 
 A library based on delta for Spark and [MLSQL](http://www.mlsql.tech).
   
+* JianShu [How delta works](https://www.jianshu.com/p/af55a2df2af8)
+* Medium  [How delta works](https://medium.com/@williamsmith_74955/how-delta-works-4519c62aa469)   
 ## Requirements
 
 This library requires Spark 2.4+ (tested).
