@@ -45,7 +45,7 @@ class MLSQLDeltaDataSource extends DeltaDataSource {
       UpsertTableInDelta(data, Option(mode), None, deltaLog,
         new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
         Seq(),
-        parameters)
+        parameters).run(sqlContext.sparkSession)
 
     } else {
       WriteIntoDelta(

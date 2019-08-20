@@ -6,7 +6,7 @@
 
     <groupId>tech.mlsql</groupId>
     <artifactId>delta-plus_2.11</artifactId>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
     <name>Delta Plus</name>
     <url>https://github.com/allwefantasy/delta-plus.git</url>
     <description>
@@ -61,8 +61,8 @@
 
         <dependency>
             <groupId>tech.mlsql</groupId>
-            <artifactId>streamingpro-common</artifactId>
-            <version>${mlsql.version}</version>
+            <artifactId>common-utils_${scala.binary.version}</artifactId>
+            <version>0.1.7</version>
         </dependency>
 
         <dependency>
