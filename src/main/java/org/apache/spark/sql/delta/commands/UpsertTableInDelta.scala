@@ -184,10 +184,14 @@ case class UpsertTableInDelta(_data: Dataset[_],
       usingColumns = idColsList, joinType = "leftanti").
       drop(F.col(UpsertTableInDelta.FILE_NAME))
 
-    if (notChangedRecords.rdd.partitions.length >= filesAreAffected.length) {
-      notChangedRecords = notChangedRecords.repartition(filesAreAffected.length)
+    if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
+      notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
+    } else {
+      if (notChangedRecords.rdd.partitions.length >= filesAreAffected.length && filesAreAffected.length > 0) {
+        notChangedRecords = notChangedRecords.repartition(filesAreAffected.length)
+      }
     }
-
+    
     val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
     val newFiles = if (!isDelete) {
       txn.writeFiles(data.repartition(1), Some(options))
@@ -209,6 +213,7 @@ object UpsertTableInDelta {
   val OPERATION_TYPE = "operation"
   val OPERATION_TYPE_UPSERT = "upsert"
   val OPERATION_TYPE_DELETE = "delete"
+  val FILE_NUM = "fileNum"
 }
 
 
