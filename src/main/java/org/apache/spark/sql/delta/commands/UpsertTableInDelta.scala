@@ -180,13 +180,17 @@ case class UpsertTableInDelta(_data: Dataset[_],
     // we should get  not changed records in affected files and write them back again
     val affectedRecords = deltaLog.createDataFrame(snapshot, filesAreAffectedWithDeltaFormat, false)
 
-    val notChangedRecords = affectedRecords.join(data,
+    var notChangedRecords = affectedRecords.join(data,
       usingColumns = idColsList, joinType = "leftanti").
       drop(F.col(UpsertTableInDelta.FILE_NAME))
 
+    if (notChangedRecords.rdd.partitions.length >= filesAreAffected.length) {
+      notChangedRecords = notChangedRecords.repartition(filesAreAffected.length)
+    }
+
     val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
     val newFiles = if (!isDelete) {
-      txn.writeFiles(data, Some(options))
+      txn.writeFiles(data.repartition(1), Some(options))
     } else Seq()
 
 

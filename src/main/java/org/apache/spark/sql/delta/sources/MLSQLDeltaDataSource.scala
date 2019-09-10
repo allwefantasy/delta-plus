@@ -41,7 +41,7 @@ class MLSQLDeltaDataSource extends DeltaDataSource {
 
     val deltaLog = DeltaLog.forTable(sqlContext.sparkSession, path)
 
-    if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
+    if (parameters.contains(UpsertTableInDelta.ID_COLS) && deltaLog.snapshot.version > -1) {
       UpsertTableInDelta(data, Option(mode), None, deltaLog,
         new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
         Seq(),
