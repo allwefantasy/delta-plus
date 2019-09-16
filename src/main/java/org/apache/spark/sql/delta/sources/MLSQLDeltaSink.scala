@@ -28,12 +28,13 @@ class MLSQLDeltaSink(
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
     val readVersion = deltaLog.snapshot.version
     val isInitial = readVersion < 0
-    if (!isInitial && parameters.contains(UpsertTableInDelta.ID_COLS)) {
+
+    if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
+      require(!isInitial, s"table [${path}] is not exists")
       UpsertTableInDelta(data, None, Option(outputMode), deltaLog,
         new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
         Seq(),
         parameters ++ Map(UpsertTableInDelta.BATCH_ID -> batchId.toString)).run(sqlContext.sparkSession)
-
     } else {
       super.addBatch(batchId, data)
     }
