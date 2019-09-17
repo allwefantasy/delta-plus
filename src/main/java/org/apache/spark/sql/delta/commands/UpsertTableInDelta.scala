@@ -91,7 +91,8 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     // if _data is stream dataframe, we should convert it to normal
     // dataframe and so we can join it later
-    val data = convertStreamDataFrame(_data)
+    var data = convertStreamDataFrame(_data)
+
 
     import sparkSession.implicits._
     val snapshot = deltaLog.snapshot
@@ -104,6 +105,18 @@ case class UpsertTableInDelta(_data: Dataset[_],
     val idCols = configuration.getOrElse(UpsertTableInDelta.ID_COLS, "")
     val idColsList = idCols.split(",").filterNot(_.isEmpty).toSeq
     val partitionColumnsInIdCols = partitionColumns.intersect(idColsList)
+
+
+    // we should make sure the data have no duplicate otherwise throw exception
+    if (configuration.get("DROP_DUPLICATE").map(_.toBoolean).getOrElse(false)) {
+      data = data.dropDuplicates(idColsList.toArray)
+    } else {
+      val tempDF = data.groupBy(idColsList.map(col => F.col(col)): _*).agg(F.count("*").as("count"))
+      if (tempDF.filter("count > 1").count() != 0) {
+        throw new RuntimeException("Cannot perform MERGE as multiple source rows " +
+          "matched and attempted to update the same target row in the Delta table.")
+      }
+    }
 
 
     val partitionFilters = if (partitionColumnsInIdCols.size > 0) {
@@ -191,7 +204,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
         notChangedRecords = notChangedRecords.repartition(filesAreAffected.length)
       }
     }
-    
+
     val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
     val newFiles = if (!isDelete) {
       txn.writeFiles(data.repartition(1), Some(options))
@@ -213,6 +226,7 @@ object UpsertTableInDelta {
   val OPERATION_TYPE = "operation"
   val OPERATION_TYPE_UPSERT = "upsert"
   val OPERATION_TYPE_DELETE = "delete"
+  val DROP_DUPLICATE = "dropDuplicate"
   val FILE_NUM = "fileNum"
 }
 
