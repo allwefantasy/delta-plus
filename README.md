@@ -47,6 +47,10 @@ when `idCols` and `operation` is not configured, then we will execute normal App
 If you have `idCols` setup, then it will execute Upsert operation. 
 If you have `idCols`, `operation` both setup and operation equal to `delete`, then it will delete table records in df.
 
+
+> Notice that if the data which will be written to the delta table have duplicate records, delta-plus will throw exception
+by default. If you wanna do deduplicating, set dropDeduplicate as true. 
+
 Spark Code for Compaction:
 
 ```scala
