@@ -33,11 +33,11 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     var actions = Seq[Action]()
 
-
     saveMode match {
       case Some(mode) =>
         deltaLog.withNewTransaction { txn =>
           txn.readWholeTable()
+          updateMetadata(txn, _data, partitionColumns, configuration, false)
           actions = upsert(txn, sparkSession)
           val operation = DeltaOperations.Write(SaveMode.Overwrite,
             Option(partitionColumns),
@@ -108,7 +108,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
 
     // we should make sure the data have no duplicate otherwise throw exception
-    if (configuration.get("DROP_DUPLICATE").map(_.toBoolean).getOrElse(false)) {
+    if (configuration.get(UpsertTableInDelta.DROP_DUPLICATE).map(_.toBoolean).getOrElse(false)) {
       data = data.dropDuplicates(idColsList.toArray)
     } else {
       val tempDF = data.groupBy(idColsList.map(col => F.col(col)): _*).agg(F.count("*").as("count"))
@@ -116,6 +116,20 @@ case class UpsertTableInDelta(_data: Dataset[_],
         throw new RuntimeException("Cannot perform MERGE as multiple source rows " +
           "matched and attempted to update the same target row in the Delta table.")
       }
+    }
+
+
+    val readVersion = deltaLog.snapshot.version
+    val isInitial = readVersion < 0
+    if (isInitial) {
+
+      deltaLog.fs.mkdirs(deltaLog.logPath)
+
+      val newFiles = if (!isDelete) {
+        txn.writeFiles(data.repartition(1), Some(options))
+      } else Seq()
+
+      return newFiles
     }
 
 

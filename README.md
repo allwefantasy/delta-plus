@@ -49,7 +49,7 @@ If you have `idCols`, `operation` both setup and operation equal to `delete`, th
 
 
 > Notice that if the data which will be written to the delta table have duplicate records, delta-plus will throw exception
-by default. If you wanna do deduplicating, set dropDeduplicate as true. 
+by default. If you wanna do deduplicating, set `dropDuplicate` as true. 
 
 Spark Code for Compaction:
 
