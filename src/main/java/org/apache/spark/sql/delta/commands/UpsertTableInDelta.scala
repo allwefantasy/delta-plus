@@ -221,7 +221,8 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
     val newFiles = if (!isDelete) {
-      txn.writeFiles(data.repartition(1), Some(options))
+      val newTempData = data.repartition(1)
+      txn.writeFiles(newTempData, Some(options))
     } else Seq()
 
 
@@ -241,6 +242,9 @@ object UpsertTableInDelta {
   val OPERATION_TYPE_UPSERT = "upsert"
   val OPERATION_TYPE_DELETE = "delete"
   val DROP_DUPLICATE = "dropDuplicate"
+
+  val PARTIAL_MERGE = "partial_merge"
+
   val FILE_NUM = "fileNum"
 }
 

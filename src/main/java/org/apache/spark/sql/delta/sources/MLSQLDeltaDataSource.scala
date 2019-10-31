@@ -53,7 +53,7 @@ class MLSQLDeltaDataSource extends DeltaDataSource {
         mode = mode,
         new DeltaOptions(parameters, sqlContext.sparkSession.sessionState.conf),
         partitionColumns = partitionColumns,
-        configuration = Map.empty,
+        configuration = parameters,
         data = data).run(sqlContext.sparkSession)
     }
 

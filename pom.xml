@@ -6,7 +6,7 @@
 
     <groupId>tech.mlsql</groupId>
     <artifactId>delta-plus_2.11</artifactId>
-    <version>0.1.5</version>
+    <version>0.1.7</version>
     <name>Delta Plus</name>
     <url>https://github.com/allwefantasy/delta-plus.git</url>
     <description>
@@ -62,7 +62,7 @@
         <dependency>
             <groupId>io.delta</groupId>
             <artifactId>delta-core_${scala.binary.version}</artifactId>
-            <version>0.3.0</version>
+            <version>0.4.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.scala-lang</groupId>
