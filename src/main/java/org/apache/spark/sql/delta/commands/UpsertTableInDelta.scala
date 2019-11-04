@@ -224,7 +224,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       val deltaPathPrefix = snapshot.deltaLog.dataPath.toUri.getPath
 
       df.repartition(F.col(UpsertTableInDelta.FILE_NAME)).mapPartitions { iter =>
-        val buffer = new ArrayBuffer[Row]()
+        val buffer = new ArrayBuffer[String]()
         var fileName: String = null
         var numEntries = 0
         while (iter.hasNext) {
@@ -233,21 +233,12 @@ case class UpsertTableInDelta(_data: Dataset[_],
             fileName = row.getAs[String](FILE_NAME)
           }
           numEntries += 1
-          buffer += row
+          buffer += UpsertTableInDelta.getKey(row, idColsList, schemaNames)
         }
         val bf = new BloomFilter(numEntries, 0.001)
-        buffer.foreach { row =>
-          bf.add(UpsertTableInDelta.getKey(row, idColsList, schemaNames))
+        buffer.foreach { rowId =>
+          bf.add(rowId)
         }
-//        println(
-//          s"""
-//             |######generate bf############
-//             |numEntries:${numEntries}
-//             |errorRate: 0.001
-//             |fileName:${fileName}
-//             |bf:${bf.serializeToString()}
-//             |content:${buffer.toList}
-//             |""".stripMargin)
         List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
       }.repartition(1).as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
     }
