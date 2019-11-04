@@ -1,15 +1,20 @@
 package org.apache.spark.sql.delta.commands
 
+import java.util.UUID
+
+import org.apache.commons.lang.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.schema.{ImplicitMetadataOperation, SchemaUtils}
+import org.apache.spark.sql.delta.sources.BFItem
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.streaming.StreamExecution
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Dataset, Row, SaveMode, SparkSession, functions => F}
 import tech.mlsql.common.BloomFilter
+import tech.mlsql.common.utils.path.PathFun
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -24,6 +29,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
   with ImplicitMetadataOperation
   with DeltaCommand with DeltaCommandsFun {
   override def run(sparkSession: SparkSession): Seq[Row] = {
+    val runId = UUID.randomUUID().toString
     assert(configuration.contains(UpsertTableInDelta.ID_COLS), "idCols is required ")
 
     if (outputMode.isDefined) {
@@ -34,6 +40,54 @@ case class UpsertTableInDelta(_data: Dataset[_],
       assert(saveMode.get == SaveMode.Append, "append is required ")
     }
 
+    def commit(txn: OptimisticTransaction, actions: Seq[Action], op: DeltaOperations.Operation): Long = {
+      val currentV = deltaLog.snapshot.version.toInt
+
+      def cleanTmpBFIndex(v: Long) = {
+        try {
+          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
+          deltaLog.fs.delete(newBFPathFs, true)
+        } catch {
+          case e1: Exception =>
+        }
+      }
+
+      def cleanOldBFIndex(v: Long) = {
+        try {
+          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v)
+          deltaLog.fs.delete(newBFPathFs, true)
+        } catch {
+          case e1: Exception =>
+        }
+      }
+
+      def mvBFIndex(v: Long) = {
+        try {
+          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
+          val targetPath = new Path(deltaLog.dataPath, "_bf_index_" + v)
+          deltaLog.fs.rename(newBFPathFs, targetPath)
+        } catch {
+          case e1: Exception =>
+        }
+      }
+
+      val newV = try {
+        txn.commit(actions, op)
+      } catch {
+        case e: Exception =>
+          if (isBloomFilterEnable) {
+            cleanTmpBFIndex(currentV + 1)
+          }
+          throw e
+      }
+      if (newV > -1) {
+        if (isBloomFilterEnable) {
+          mvBFIndex(newV)
+          cleanOldBFIndex(newV - 1)
+        }
+      }
+      newV
+    }
 
     var actions = Seq[Action]()
 
@@ -42,11 +96,12 @@ case class UpsertTableInDelta(_data: Dataset[_],
         deltaLog.withNewTransaction { txn =>
           txn.readWholeTable()
           updateMetadata(txn, _data, partitionColumns, configuration, false)
-          actions = upsert(txn, sparkSession)
+          actions = upsert(txn, sparkSession, runId)
           val operation = DeltaOperations.Write(SaveMode.Overwrite,
             Option(partitionColumns),
             options.replaceWhere)
-          txn.commit(actions, operation)
+          commit(txn, actions, operation)
+
         }
       case None => outputMode match {
         case Some(mode) =>
@@ -73,11 +128,11 @@ case class UpsertTableInDelta(_data: Dataset[_],
           if (currentVersion >= batchId) {
             logInfo(s"Skipping already complete epoch $batchId, in query $queryId")
           } else {
-            actions = upsert(txn, sparkSession)
+            actions = upsert(txn, sparkSession, runId)
             val setTxn = SetTransaction(queryId,
               batchId, Some(deltaLog.clock.getTimeMillis())) :: Nil
             val info = DeltaOperations.StreamingUpdate(outputMode.get, queryId, batchId)
-            txn.commit(setTxn ++ actions, info)
+            commit(txn, setTxn ++ actions, info)
           }
       }
     }
@@ -87,7 +142,12 @@ case class UpsertTableInDelta(_data: Dataset[_],
     }
   }
 
-  def upsert(txn: OptimisticTransaction, sparkSession: SparkSession): Seq[Action] = {
+  def isBloomFilterEnable = {
+    configuration.getOrElse(UpsertTableInDelta.BLOOM_FILTER_ENABLE, "false").toBoolean
+  }
+
+  def upsert(txn: OptimisticTransaction, sparkSession: SparkSession, runId: String): Seq[Action] = {
+
 
     val isDelete = configuration
       .getOrElse(UpsertTableInDelta.OPERATION_TYPE,
@@ -121,7 +181,52 @@ case class UpsertTableInDelta(_data: Dataset[_],
           "matched and attempted to update the same target row in the Delta table.")
       }
     }
+    var schemaNames = deltaLog.snapshot.schema.map(f => f.name).toSeq
+    if (schemaNames.size == 0) {
+      schemaNames = data.schema.map(f => f.name).toSeq
+    }
 
+
+    def generateBFForParquetFile(addFiles: Seq[AddFile], deletedFiles: Seq[RemoveFile]) = {
+
+      val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + (deltaLog.snapshot.version.toInt + 1) + "_" + runId)
+      val newBFPath = newBFPathFs.toUri.getPath
+
+      val bfPathFs = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version + "_" + runId)
+      val bfPath = bfPathFs.toUri.getPath
+
+      if (deltaLog.fs.exists(bfPathFs)) {
+        deltaLog.fs.mkdirs(newBFPathFs)
+        val deletePaths = deletedFiles.map(f => f.path).toSet
+        sparkSession.read.parquet(bfPath).repartition(1).as[BFItem].
+          filter(f => !deletePaths.contains(f.fileName)).write.
+          mode(SaveMode.Overwrite).parquet(newBFPath)
+      }
+
+      val df = sparkSession.read.
+        parquet(addFiles.map(f => PathFun(deltaLog.dataPath.toUri.getPath).add(f.path).toPath): _*).
+        withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
+      val FILE_NAME = UpsertTableInDelta.FILE_NAME
+
+      val deltaPathPrefix = snapshot.deltaLog.dataPath.toUri.getPath
+
+      df.mapPartitions { iter =>
+        val buffer = new ArrayBuffer[Row]()
+        var fileName: String = null
+        var numEntries = 0
+        while (iter.hasNext) {
+          val row = iter.next()
+          if (fileName == null) {
+            fileName = row.getAs[String](FILE_NAME)
+          }
+          numEntries += 1
+          buffer += row
+        }
+        val bf = new BloomFilter(numEntries, 0.001)
+        buffer.foreach { row => bf.add(UpsertTableInDelta.getKey(row, idColsList, schemaNames)) }
+        List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
+      }.repartition(1).as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
+    }
 
     val readVersion = deltaLog.snapshot.version
     val isInitial = readVersion < 0
@@ -132,7 +237,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       val newFiles = if (!isDelete) {
         txn.writeFiles(data.repartition(1), Some(options))
       } else Seq()
-
+      generateBFForParquetFile(newFiles, Seq())
       return newFiles
     }
 
@@ -182,9 +287,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
           metadata.partitionColumns, snapshot.allFiles.toDF(), predicates).as[AddFile]
     }
 
-    def isBloomFilterEnable = {
-      configuration.getOrElse(UpsertTableInDelta.BLOOM_FILTER_ENABLE, "false").toBoolean
-    }
+
     // Again, we collect all files to driver,
     // this may impact performance and even make the driver OOM when
     // the number of files are very huge.
@@ -192,24 +295,16 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     val filterFiles = filterFilesDataSet.collect
 
-    val schemaNames = deltaLog.snapshot.schema.map(f => f.name)
-
-    def getKey(row: Row) = {
-      idColsList.sorted.map(col => schemaNames.indexOf(col)).map { col =>
-        row.get(col).toString
-      }.mkString("_")
-    }
-
     // filter files are affected by BF
     val filesAreAffectedWithDeltaFormat = if (isBloomFilterEnable) {
-      val bfPath = new Path(deltaLog.dataPath, "_bf_index").toUri.getPath
+      val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version).toUri.getPath
       val bfItemsBr = sparkSession.sparkContext.broadcast(sparkSession.read.parquet(bfPath).as[BFItem].collect())
-      val affectedFilePaths = data.as[Row].mapPartitions { rowIter =>
+      val affectedFilePaths = data.mapPartitions { rowIter =>
         val containers = bfItemsBr.value.map(bfItem => (new BloomFilter(bfItem.bf), bfItem.fileName))
         rowIter.flatMap { row =>
-          containers.filter(c => c._1.mightContain(getKey(row))).map(c => c._2)
+          containers.filter(c => c._1.mightContain(UpsertTableInDelta.getKey(row.asInstanceOf[Row], idColsList, schemaNames))).map(c => c._2)
         }
-      }.as[String].collect()
+      }.as[String].distinct().collect()
       filterFiles.filter(f => affectedFilePaths.contains(f.path))
     } else {
       // filter files are affected by anti join
@@ -241,40 +336,13 @@ case class UpsertTableInDelta(_data: Dataset[_],
     if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
       notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
     } else {
-      if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 0) {
-        notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length)
+      // since new data will generate 1 file, and we should make sure new files from old files decrease one.
+      if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
+        notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length - 1)
       }
     }
 
     val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
-
-
-    def generateBFForParquetFile(addFiles: Seq[AddFile], deletedFiles: Seq[RemoveFile]) = {
-
-      val bfPath = new Path(deltaLog.dataPath, "_bf_index").toUri.getPath
-      val deletePaths = deletedFiles.map(f => f.path).toSet
-      sparkSession.read.parquet(bfPath).repartition(1).as[BFItem].map(f => !deletePaths.contains(f.fileName)).write.mode(SaveMode.Overwrite).parquet(bfPath)
-
-      val df = deltaLog.createDataFrame(snapshot, addFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
-
-      df.mapPartitions { iter =>
-        val buffer = new ArrayBuffer[Row]()
-        var fileName: String = null
-        var numEntries = 0
-        while (iter.hasNext) {
-          val row = iter.next()
-          if (fileName == null) {
-            fileName = row.getAs[String](UpsertTableInDelta.FILE_NAME)
-          }
-          numEntries += 1
-          buffer += row
-        }
-        val bf = new BloomFilter(numEntries, 0.001)
-        buffer.foreach { row => bf.add(getKey(row)) }
-        List[BFItem](BFItem(fileName, bf.serializeToString())).iterator
-      }.repartition(1).as[BFItem].write.mode(SaveMode.Append).parquet(bfPath)
-    }
-
 
     val newFiles = if (!isDelete) {
       val newTempData = data.repartition(1)
@@ -284,7 +352,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
     if (isBloomFilterEnable) {
       generateBFForParquetFile(notChangedRecordsNewFiles ++ newFiles, deletedFiles)
     }
-
+    logInfo(s"Update info: newFiles:${newFiles.size} notChangedRecordsNewFiles:${notChangedRecordsNewFiles.size} deletedFiles:${deletedFiles.size}")
     notChangedRecordsNewFiles ++ newFiles ++ deletedFiles
   }
 
@@ -306,9 +374,15 @@ object UpsertTableInDelta {
 
   val FILE_NUM = "fileNum"
   val BLOOM_FILTER_ENABLE = "bloomFilterEnable"
+
+  def getKey(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
+    idColsList.sorted.map(col => schemaNames.indexOf(col)).map { col =>
+      row.get(col).toString
+    }.mkString("_")
+  }
 }
 
-case class BFItem(fileName: String, bf: String)
+
 
 
 
