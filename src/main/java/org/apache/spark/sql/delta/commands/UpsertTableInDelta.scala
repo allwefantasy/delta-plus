@@ -192,7 +192,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + (deltaLog.snapshot.version.toInt + 1) + "_" + runId)
       val newBFPath = newBFPathFs.toUri.getPath
 
-      val bfPathFs = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version + "_" + runId)
+      val bfPathFs = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
       val bfPath = bfPathFs.toUri.getPath
 
       if (deltaLog.fs.exists(bfPathFs)) {
@@ -203,8 +203,16 @@ case class UpsertTableInDelta(_data: Dataset[_],
           mode(SaveMode.Overwrite).parquet(newBFPath)
       }
 
+      // if current version of delta have no bf_index, we will back to use join and
+      // then we can create bf_file for this version and new version both.
+      var realAddFiles = addFiles
+      if (!deltaLog.fs.exists(bfPathFs) && deltaLog.snapshot.version > -1) {
+        realAddFiles ++= deltaLog.snapshot.allFiles.collect()
+        realAddFiles = realAddFiles.filterNot(addfile => deletedFiles.map(_.path).contains(addfile.path))
+      }
+
       val df = sparkSession.read.
-        parquet(addFiles.map(f => PathFun(deltaLog.dataPath.toUri.getPath).add(f.path).toPath): _*).
+        parquet(realAddFiles.map(f => PathFun(deltaLog.dataPath.toUri.getPath).add(f.path).toPath): _*).
         withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
       val FILE_NAME = UpsertTableInDelta.FILE_NAME
 
@@ -296,9 +304,9 @@ case class UpsertTableInDelta(_data: Dataset[_],
     val filterFiles = filterFilesDataSet.collect
 
     // filter files are affected by BF
-    val filesAreAffectedWithDeltaFormat = if (isBloomFilterEnable) {
-      val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version).toUri.getPath
-      val bfItemsBr = sparkSession.sparkContext.broadcast(sparkSession.read.parquet(bfPath).as[BFItem].collect())
+    val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
+    val filesAreAffectedWithDeltaFormat = if (isBloomFilterEnable && deltaLog.fs.exists(bfPath)) {
+      val bfItemsBr = sparkSession.sparkContext.broadcast(sparkSession.read.parquet(bfPath.toUri.getPath).as[BFItem].collect())
       val affectedFilePaths = data.mapPartitions { rowIter =>
         val containers = bfItemsBr.value.map(bfItem => (new BloomFilter(bfItem.bf), bfItem.fileName))
         rowIter.flatMap { row =>
