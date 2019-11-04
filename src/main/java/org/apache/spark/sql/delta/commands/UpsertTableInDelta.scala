@@ -14,7 +14,6 @@ import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Dataset, Row, SaveMode, SparkSession, functions => F}
 import tech.mlsql.common.BloomFilter
-import tech.mlsql.common.utils.path.PathFun
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -199,11 +198,12 @@ case class UpsertTableInDelta(_data: Dataset[_],
         deltaLog.fs.mkdirs(newBFPathFs)
         val deletePaths = deletedFiles.map(f => f.path).toSet
         sparkSession.read.parquet(bfPath).repartition(1).as[BFItem].
-          filter(f => !deletePaths.contains(f.fileName)).write.
-          mode(SaveMode.Overwrite).parquet(newBFPath)
+          filter { f =>
+            !deletePaths.contains(f.fileName)
+          }.write.mode(SaveMode.Append).parquet(newBFPath)
       }
 
-      // There are 2 possible situations that there are no _bf_index_[version]:
+      // There are 2 possible reasons that there is no _bf_index_[version] directory:
       // 1. No upsert operation happens before
       // 2. It fails to create _bf_index_[version] in previous upsert operation/version. For example, application crash happens
       //    between commit and rename.
@@ -217,14 +217,13 @@ case class UpsertTableInDelta(_data: Dataset[_],
         realAddFiles = realAddFiles.filterNot(addfile => deletedFiles.map(_.path).contains(addfile.path))
       }
 
-      val df = sparkSession.read.
-        parquet(realAddFiles.map(f => PathFun(deltaLog.dataPath.toUri.getPath).add(f.path).toPath): _*).
+      val df = deltaLog.createDataFrame(snapshot, realAddFiles, false).
         withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
       val FILE_NAME = UpsertTableInDelta.FILE_NAME
 
       val deltaPathPrefix = snapshot.deltaLog.dataPath.toUri.getPath
 
-      df.mapPartitions { iter =>
+      df.repartition(F.col(UpsertTableInDelta.FILE_NAME)).mapPartitions { iter =>
         val buffer = new ArrayBuffer[Row]()
         var fileName: String = null
         var numEntries = 0
@@ -237,7 +236,18 @@ case class UpsertTableInDelta(_data: Dataset[_],
           buffer += row
         }
         val bf = new BloomFilter(numEntries, 0.001)
-        buffer.foreach { row => bf.add(UpsertTableInDelta.getKey(row, idColsList, schemaNames)) }
+        buffer.foreach { row =>
+          bf.add(UpsertTableInDelta.getKey(row, idColsList, schemaNames))
+        }
+//        println(
+//          s"""
+//             |######generate bf############
+//             |numEntries:${numEntries}
+//             |errorRate: 0.001
+//             |fileName:${fileName}
+//             |bf:${bf.serializeToString()}
+//             |content:${buffer.toList}
+//             |""".stripMargin)
         List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
       }.repartition(1).as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
     }
