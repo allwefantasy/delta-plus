@@ -203,8 +203,14 @@ case class UpsertTableInDelta(_data: Dataset[_],
           mode(SaveMode.Overwrite).parquet(newBFPath)
       }
 
-      // if current version of delta have no bf_index, we will back to use join and
-      // then we can create bf_file for this version and new version both.
+      // There are 2 possible situations that there are no _bf_index_[version]:
+      // 1. No upsert operation happens before
+      // 2. It fails to create _bf_index_[version] in previous upsert operation/version. For example, application crash happens
+      //    between commit and rename.
+      //
+      // When there is no _bf_index_[version], the we will back to join to find the affected files, and then
+      // create new BF file for current version and the version uncommitted yet.
+      //
       var realAddFiles = addFiles
       if (!deltaLog.fs.exists(bfPathFs) && deltaLog.snapshot.version > -1) {
         realAddFiles ++= deltaLog.snapshot.allFiles.collect()
