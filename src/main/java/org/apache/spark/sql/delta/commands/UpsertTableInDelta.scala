@@ -243,7 +243,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
         createDataFrame(realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
       }
       val FILE_NAME = UpsertTableInDelta.FILE_NAME
-//            println(
+      //            println(
       //              s"""
       //                 |###  bf stat ###
       //                 |fileNumber: ${realAddFiles.size}
@@ -252,6 +252,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       //                 |""".stripMargin)
 
       val schemaNames = df.schema.map(f => f.name)
+      val errorRate = configuration.getOrElse("bfErrorRate", "0.0001").toDouble
       df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.mapPartitions { iter =>
         val buffer = new ArrayBuffer[String]()
         var fileName: String = null
@@ -265,18 +266,18 @@ case class UpsertTableInDelta(_data: Dataset[_],
           buffer += UpsertTableInDelta.getKey(row, idColsList, schemaNames)
         }
         if (numEntries > 0) {
-          val bf = new BloomFilter(numEntries, 0.001)
+          val bf = new BloomFilter(numEntries, errorRate)
           buffer.foreach { rowId =>
             bf.add(rowId)
           }
-//                  println(
-//                    s"""
-//                       |### gen bf ###
-//                       |fileName: ${fileName}
-//                       |bf: ${bf.serializeToString()}
-//                       |numEntries: ${numEntries}
-//                       |errorRate: 0.001
-//                       |""".stripMargin)
+          //                  println(
+          //                    s"""
+          //                       |### gen bf ###
+          //                       |fileName: ${fileName}
+          //                       |bf: ${bf.serializeToString()}
+          //                       |numEntries: ${numEntries}
+          //                       |errorRate: 0.001
+          //                       |""".stripMargin)
           List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
         } else List[BFItem]().iterator
 
