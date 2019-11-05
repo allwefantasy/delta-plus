@@ -4,6 +4,7 @@ import java.util.UUID
 
 import org.apache.commons.lang.StringUtils
 import org.apache.hadoop.fs.Path
+import org.apache.spark.Partitioner
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
@@ -41,54 +42,8 @@ case class UpsertTableInDelta(_data: Dataset[_],
       assert(saveMode.get == SaveMode.Append, "append is required ")
     }
 
-    def commit(txn: OptimisticTransaction, actions: Seq[Action], op: DeltaOperations.Operation): Long = {
-      val currentV = deltaLog.snapshot.version.toInt
-
-      def cleanTmpBFIndex(v: Long) = {
-        try {
-          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
-          deltaLog.fs.delete(newBFPathFs, true)
-        } catch {
-          case e1: Exception =>
-        }
-      }
-
-      def cleanOldBFIndex(v: Long) = {
-        try {
-          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v)
-          deltaLog.fs.delete(newBFPathFs, true)
-        } catch {
-          case e1: Exception =>
-        }
-      }
-
-      def mvBFIndex(v: Long) = {
-        try {
-          val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
-          val targetPath = new Path(deltaLog.dataPath, "_bf_index_" + v)
-          deltaLog.fs.rename(newBFPathFs, targetPath)
-        } catch {
-          case e1: Exception =>
-        }
-      }
-
-      val newV = try {
-        txn.commit(actions, op)
-      } catch {
-        case e: Exception =>
-          if (isBloomFilterEnable) {
-            cleanTmpBFIndex(currentV + 1)
-          }
-          throw e
-      }
-      if (newV > -1) {
-        if (isBloomFilterEnable) {
-          mvBFIndex(newV)
-          cleanOldBFIndex(newV - 1)
-        }
-      }
-      newV
-    }
+    val upsertConf = new UpsertTableInDeltaConf(configuration, deltaLog, sparkSession)
+    val upsertCommit = new UpsertCommit(deltaLog, runId, upsertConf)
 
     var actions = Seq[Action]()
 
@@ -101,7 +56,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
           val operation = DeltaOperations.Write(SaveMode.Overwrite,
             Option(partitionColumns),
             options.replaceWhere)
-          commit(txn, actions, operation)
+          upsertCommit.commit(txn, actions, operation)
 
         }
       case None => outputMode match {
@@ -133,7 +88,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
             val setTxn = SetTransaction(queryId,
               batchId, Some(deltaLog.clock.getTimeMillis())) :: Nil
             val info = DeltaOperations.StreamingUpdate(outputMode.get, queryId, batchId)
-            commit(txn, setTxn ++ actions, info)
+            upsertCommit.commit(txn, setTxn ++ actions, info)
           }
       }
     }
@@ -143,16 +98,11 @@ case class UpsertTableInDelta(_data: Dataset[_],
     }
   }
 
-  def isBloomFilterEnable = {
-    configuration.getOrElse(UpsertTableInDelta.BLOOM_FILTER_ENABLE, "false").toBoolean
-  }
-
   def upsert(txn: OptimisticTransaction, sparkSession: SparkSession, runId: String): Seq[Action] = {
 
-
-    val isDelete = configuration
-      .getOrElse(UpsertTableInDelta.OPERATION_TYPE,
-        UpsertTableInDelta.OPERATION_TYPE_UPSERT) == UpsertTableInDelta.OPERATION_TYPE_DELETE
+    val upsertConf = new UpsertTableInDeltaConf(configuration, deltaLog, sparkSession)
+    val upsertBF = new UpsertBF(upsertConf, runId)
+    val isDelete = upsertConf.isDeleteOp
 
     // if _data is stream dataframe, we should convert it to normal
     // dataframe and so we can join it later
@@ -171,11 +121,8 @@ case class UpsertTableInDelta(_data: Dataset[_],
     val idColsList = idCols.split(",").filterNot(_.isEmpty).toSeq
     val partitionColumnsInIdCols = partitionColumns.intersect(idColsList)
 
-    val readVersion = deltaLog.snapshot.version
-    val isInitial = readVersion < 0
-
     // we should make sure the data have no duplicate otherwise throw exception
-    if (configuration.get(UpsertTableInDelta.DROP_DUPLICATE).map(_.toBoolean).getOrElse(false)) {
+    if (upsertConf.isDropDuplicate()) {
       data = data.dropDuplicates(idColsList.toArray)
     } else {
       val tempDF = data.groupBy(idColsList.map(col => F.col(col)): _*).agg(F.count("*").as("count"))
@@ -185,114 +132,17 @@ case class UpsertTableInDelta(_data: Dataset[_],
       }
     }
 
-    val sourceSchema = if (isInitial) data.schema else snapshot.schema
-
-    def generateBFForParquetFile(addFiles: Seq[AddFile], deletedFiles: Seq[RemoveFile]) = {
-
-      val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + (deltaLog.snapshot.version.toInt + 1) + "_" + runId)
-      val newBFPath = newBFPathFs.toUri.getPath
-
-      val bfPathFs = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
-      val bfPath = bfPathFs.toUri.getPath
-
-      if (deltaLog.fs.exists(bfPathFs)) {
-        deltaLog.fs.mkdirs(newBFPathFs)
-        val deletePaths = deletedFiles.map(f => f.path).toSet
-        sparkSession.read.parquet(bfPath).repartition(1).as[BFItem].
-          filter { f =>
-            !deletePaths.contains(f.fileName)
-          }.write.mode(SaveMode.Append).parquet(newBFPath)
-      }
-
-      // There are 2 possible reasons that there is no _bf_index_[version] directory:
-      // 1. No upsert operation happens before
-      // 2. It fails to create _bf_index_[version] in previous upsert operation/version. For example, application crash happens
-      //    between commit and rename.
-      //
-      // When there is no _bf_index_[version], the we will back to join to find the affected files, and then
-      // create new BF file for current version and the version uncommitted yet.
-      //
-      var realAddFiles = addFiles
-      if (!deltaLog.fs.exists(bfPathFs) && deltaLog.snapshot.version > -1) {
-        realAddFiles ++= deltaLog.snapshot.allFiles.collect()
-        realAddFiles = realAddFiles.filterNot(addfile => deletedFiles.map(_.path).contains(addfile.path))
-      }
-
-      val deltaPathPrefix = snapshot.deltaLog.dataPath.toUri.getPath
-
-      def createDataFrame(
-                           addFiles: Seq[AddFile],
-                           isStreaming: Boolean = false,
-                           actionTypeOpt: Option[String] = None): DataFrame = {
-        val actionType = actionTypeOpt.getOrElse(if (isStreaming) "streaming" else "batch")
-        val fileIndex = new TahoeBatchFileIndex(sparkSession, actionType, addFiles, deltaLog, deltaLog.dataPath, snapshot)
-        val relation = HadoopFsRelation(
-          fileIndex,
-          partitionSchema = StructType(Array[StructField]()),
-          dataSchema = sourceSchema,
-          bucketSpec = None,
-          snapshot.fileFormat,
-          snapshot.metadata.format.options)(sparkSession)
-
-        Dataset.ofRows(sparkSession, LogicalRelation(relation, isStreaming = isStreaming))
-      }
-
-      val df = if (!isInitial) {
-        deltaLog.createDataFrame(snapshot, realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
-      } else {
-        createDataFrame(realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
-      }
-      val FILE_NAME = UpsertTableInDelta.FILE_NAME
-      //            println(
-      //              s"""
-      //                 |###  bf stat ###
-      //                 |fileNumber: ${realAddFiles.size}
-      //                 |files: ${realAddFiles.map(f => PathFun(deltaPathPrefix).add(f.path).toPath).toSeq}
-      //                 |mapPartitions: ${df.repartition(realAddFiles.size,F.col(FILE_NAME)).rdd.partitions.size}
-      //                 |""".stripMargin)
-
-      val schemaNames = df.schema.map(f => f.name)
-      val errorRate = configuration.getOrElse("bfErrorRate", "0.0001").toDouble
-      df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.mapPartitions { iter =>
-        val buffer = new ArrayBuffer[String]()
-        var fileName: String = null
-        var numEntries = 0
-        while (iter.hasNext) {
-          val row = iter.next()
-          if (fileName == null) {
-            fileName = row.getAs[String](FILE_NAME)
-          }
-          numEntries += 1
-          buffer += UpsertTableInDelta.getKey(row, idColsList, schemaNames)
-        }
-        if (numEntries > 0) {
-          val bf = new BloomFilter(numEntries, errorRate)
-          buffer.foreach { rowId =>
-            bf.add(rowId)
-          }
-          //                  println(
-          //                    s"""
-          //                       |### gen bf ###
-          //                       |fileName: ${fileName}
-          //                       |bf: ${bf.serializeToString()}
-          //                       |numEntries: ${numEntries}
-          //                       |errorRate: 0.001
-          //                       |""".stripMargin)
-          List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
-        } else List[BFItem]().iterator
-
-      }.repartition(1).toDF().as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
-    }
+    val sourceSchema = if (upsertConf.isInitial) data.schema else snapshot.schema
 
 
-    if (isInitial) {
+    if (upsertConf.isInitial) {
 
       deltaLog.fs.mkdirs(deltaLog.logPath)
 
       val newFiles = if (!isDelete) {
         txn.writeFiles(data.repartition(1), Some(options))
       } else Seq()
-      generateBFForParquetFile(newFiles, Seq())
+      upsertBF.generateBFForParquetFile(sourceSchema, newFiles, Seq())
       return newFiles
     }
 
@@ -352,7 +202,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     // filter files are affected by BF
     val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
-    val filesAreAffectedWithDeltaFormat = if (isBloomFilterEnable && deltaLog.fs.exists(bfPath)) {
+    val filesAreAffectedWithDeltaFormat = if (upsertConf.isBloomFilterEnable && deltaLog.fs.exists(bfPath)) {
       val bfItemsBr = sparkSession.sparkContext.broadcast(sparkSession.read.parquet(bfPath.toUri.getPath).as[BFItem].collect())
       val schemaNames = data.schema.map(f => f.name)
       val affectedFilePaths = data.mapPartitions { rowIter =>
@@ -405,8 +255,8 @@ case class UpsertTableInDelta(_data: Dataset[_],
       txn.writeFiles(newTempData, Some(options))
     } else Seq()
 
-    if (isBloomFilterEnable) {
-      generateBFForParquetFile(notChangedRecordsNewFiles ++ newFiles, deletedFiles)
+    if (upsertConf.isBloomFilterEnable) {
+      upsertBF.generateBFForParquetFile(sourceSchema, notChangedRecordsNewFiles ++ newFiles, deletedFiles)
     }
     logInfo(s"Update info: newFiles:${newFiles.size} notChangedRecordsNewFiles:${notChangedRecordsNewFiles.size} deletedFiles:${deletedFiles.size}")
     notChangedRecordsNewFiles ++ newFiles ++ deletedFiles
@@ -432,10 +282,231 @@ object UpsertTableInDelta {
   val BLOOM_FILTER_ENABLE = "bloomFilterEnable"
 
   def getKey(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
-    val item = idColsList.sorted.map(col => schemaNames.indexOf(col)).map { col =>
+    getColStrs(row, idColsList, schemaNames)
+  }
+
+  def getColStrs(row: Row, cols: Seq[String], schemaNames: Seq[String]) = {
+    val item = cols.sorted.map(col => schemaNames.indexOf(col)).map { col =>
       row.get(col).toString
     }.mkString("_")
     item
+  }
+}
+
+class UpsertTableInDeltaConf(configuration: Map[String, String], @transient val deltaLog: DeltaLog, @transient val sparkSession: SparkSession) {
+  def isDropDuplicate() = {
+    configuration.get(UpsertTableInDelta.DROP_DUPLICATE).map(_.toBoolean).getOrElse(false)
+  }
+
+  def isBloomFilterEnable = {
+    configuration.getOrElse(UpsertTableInDelta.BLOOM_FILTER_ENABLE, "false").toBoolean
+  }
+
+  def isDeleteOp = {
+    configuration
+      .getOrElse(UpsertTableInDelta.OPERATION_TYPE,
+        UpsertTableInDelta.OPERATION_TYPE_UPSERT) == UpsertTableInDelta.OPERATION_TYPE_DELETE
+  }
+
+  def isInitial = {
+    val readVersion = deltaLog.snapshot.version
+    val isInitial = readVersion < 0
+    isInitial
+  }
+
+  def bfErrorRate = {
+    configuration.getOrElse("bfErrorRate", "0.0001").toDouble
+  }
+
+  def idColsList = {
+    val idCols = configuration.getOrElse(UpsertTableInDelta.ID_COLS, "")
+    idCols.split(",").filterNot(_.isEmpty).toSeq
+  }
+
+
+}
+
+class UpsertCommit(deltaLog: DeltaLog, runId: String, upserConf: UpsertTableInDeltaConf) {
+
+  def commit(txn: OptimisticTransaction, actions: Seq[Action], op: DeltaOperations.Operation): Long = {
+    val currentV = deltaLog.snapshot.version.toInt
+
+    def cleanTmpBFIndex(v: Long) = {
+      try {
+        val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
+        deltaLog.fs.delete(newBFPathFs, true)
+      } catch {
+        case e1: Exception =>
+      }
+    }
+
+    def cleanOldBFIndex(v: Long) = {
+      try {
+        val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v)
+        deltaLog.fs.delete(newBFPathFs, true)
+      } catch {
+        case e1: Exception =>
+      }
+    }
+
+    def mvBFIndex(v: Long) = {
+      try {
+        val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + v + "_" + runId)
+        val targetPath = new Path(deltaLog.dataPath, "_bf_index_" + v)
+        deltaLog.fs.rename(newBFPathFs, targetPath)
+      } catch {
+        case e1: Exception =>
+      }
+    }
+
+    val newV = try {
+      txn.commit(actions, op)
+    } catch {
+      case e: Exception =>
+        if (upserConf.isBloomFilterEnable) {
+          cleanTmpBFIndex(currentV + 1)
+        }
+        throw e
+    }
+    if (newV > -1) {
+      if (upserConf.isBloomFilterEnable) {
+        mvBFIndex(newV)
+        cleanOldBFIndex(newV - 1)
+      }
+    }
+    newV
+  }
+}
+
+class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
+
+  import upsertConf.sparkSession.implicits._
+
+  def generateBFForParquetFile(sourceSchema: StructType, addFiles: Seq[AddFile], deletedFiles: Seq[RemoveFile]) = {
+    val deltaLog = upsertConf.deltaLog
+    val snapshot = deltaLog.snapshot
+    val sparkSession = upsertConf.sparkSession
+    val isInitial = upsertConf.isInitial
+
+
+    val newBFPathFs = new Path(deltaLog.dataPath, "_bf_index_" + (deltaLog.snapshot.version.toInt + 1) + "_" + runId)
+    val newBFPath = newBFPathFs.toUri.getPath
+
+    val bfPathFs = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
+    val bfPath = bfPathFs.toUri.getPath
+
+    if (deltaLog.fs.exists(bfPathFs)) {
+      deltaLog.fs.mkdirs(newBFPathFs)
+      val deletePaths = deletedFiles.map(f => f.path).toSet
+      sparkSession.read.parquet(bfPath).repartition(1).as[BFItem].
+        filter { f =>
+          !deletePaths.contains(f.fileName)
+        }.write.mode(SaveMode.Append).parquet(newBFPath)
+    }
+
+    // There are 2 possible reasons that there is no _bf_index_[version] directory:
+    // 1. No upsert operation happens before
+    // 2. It fails to create _bf_index_[version] in previous upsert operation/version. For example, application crash happens
+    //    between commit and rename.
+    //
+    // When there is no _bf_index_[version], the we will back to join to find the affected files, and then
+    // create new BF file for current version and the version uncommitted yet.
+    //
+    var realAddFiles = addFiles
+    if (!deltaLog.fs.exists(bfPathFs) && deltaLog.snapshot.version > -1) {
+      realAddFiles ++= deltaLog.snapshot.allFiles.collect()
+      realAddFiles = realAddFiles.filterNot(addfile => deletedFiles.map(_.path).contains(addfile.path))
+    }
+
+    val deltaPathPrefix = deltaLog.snapshot.deltaLog.dataPath.toUri.getPath
+
+    def createDataFrame(
+                         addFiles: Seq[AddFile],
+                         isStreaming: Boolean = false,
+                         actionTypeOpt: Option[String] = None): DataFrame = {
+      val actionType = actionTypeOpt.getOrElse(if (isStreaming) "streaming" else "batch")
+      val fileIndex = new TahoeBatchFileIndex(sparkSession, actionType, addFiles, deltaLog, deltaLog.dataPath, snapshot)
+      val relation = HadoopFsRelation(
+        fileIndex,
+        partitionSchema = StructType(Array[StructField]()),
+        dataSchema = sourceSchema,
+        bucketSpec = None,
+        deltaLog.snapshot.fileFormat,
+        deltaLog.snapshot.metadata.format.options)(sparkSession)
+
+      Dataset.ofRows(sparkSession, LogicalRelation(relation, isStreaming = isStreaming))
+    }
+
+    val df = if (!isInitial) {
+      deltaLog.createDataFrame(snapshot, realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
+    } else {
+      createDataFrame(realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
+    }
+    val FILE_NAME = UpsertTableInDelta.FILE_NAME
+    println(
+      s"""
+         |###  bf stat ###
+         |fileNumber: ${realAddFiles.size}
+         |realAddFiles: ${realAddFiles.map(f => f.path).toSeq}
+         |deletedFiles: ${deletedFiles.map(f => f.path).toSeq}
+         |mapPartitions: ${df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.partitions.size}
+         |""".stripMargin)
+
+    val schemaNames = df.schema.map(f => f.name)
+    val errorRate = upsertConf.bfErrorRate
+    val idColsList = upsertConf.idColsList
+    val dfSchema = df.schema.map(f => f.name)
+    val fileWithIndex = realAddFiles.zipWithIndex.map { f => (f._1.path, f._2) }.toMap
+    val fileNum = fileWithIndex.size
+    val rdd = df.rdd.map { row =>
+      (UpsertTableInDelta.getColStrs(row, Seq(FILE_NAME), dfSchema), row)
+    }.partitionBy(new Partitioner() {
+      override def numPartitions: Int = fileNum
+
+      override def getPartition(key: Any): Int = fileWithIndex(StringUtils.splitByWholeSeparator(key.toString, deltaPathPrefix).last.stripPrefix("/"))
+    }).map(f=>f._2).mapPartitionsWithIndex { (index, iter) =>
+      val buffer = new ArrayBuffer[String]()
+      var fileName: String = null
+      var numEntries = 0
+      while (iter.hasNext) {
+        val row = iter.next()
+        if (fileName == null) {
+          fileName = row.getAs[String](FILE_NAME)
+        }
+        numEntries += 1
+        buffer += UpsertTableInDelta.getKey(row, idColsList, schemaNames)
+      }
+      if (numEntries > 0) {
+        val bf = new BloomFilter(numEntries, errorRate)
+        buffer.foreach { rowId =>
+          bf.add(rowId)
+        }
+        println(
+          s"""
+             |### gen bf ###
+             |index: ${index}
+             |fileName: ${StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/")}
+             |bf: ${bf.serializeToString()}
+             |numEntries: ${numEntries}
+             |errorRate: ${errorRate}
+             |rowIds: ${buffer.toList}
+             |""".stripMargin)
+        List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
+      } else {
+        println(
+          s"""
+             |### gen bf ###
+             |index: ${index}
+             |fileName:
+             |bf: 
+             |numEntries: ${numEntries}
+             |errorRate: ${errorRate}
+             |rowIds: ${buffer.toList}
+             |""".stripMargin)
+        List[BFItem]().iterator
+      }
+
+    }.repartition(1).toDF().as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
   }
 }
 
