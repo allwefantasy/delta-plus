@@ -443,14 +443,14 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
       createDataFrame(realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
     }
     val FILE_NAME = UpsertTableInDelta.FILE_NAME
-    println(
-      s"""
-         |###  bf stat ###
-         |fileNumber: ${realAddFiles.size}
-         |realAddFiles: ${realAddFiles.map(f => f.path).toSeq}
-         |deletedFiles: ${deletedFiles.map(f => f.path).toSeq}
-         |mapPartitions: ${df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.partitions.size}
-         |""".stripMargin)
+//    println(
+//      s"""
+//         |###  bf stat ###
+//         |fileNumber: ${realAddFiles.size}
+//         |realAddFiles: ${realAddFiles.map(f => f.path).toSeq}
+//         |deletedFiles: ${deletedFiles.map(f => f.path).toSeq}
+//         |mapPartitions: ${df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.partitions.size}
+//         |""".stripMargin)
 
     val schemaNames = df.schema.map(f => f.name)
     val errorRate = upsertConf.bfErrorRate
@@ -481,28 +481,28 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
         buffer.foreach { rowId =>
           bf.add(rowId)
         }
-        println(
-          s"""
-             |### gen bf ###
-             |index: ${index}
-             |fileName: ${StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/")}
-             |bf: ${bf.serializeToString()}
-             |numEntries: ${numEntries}
-             |errorRate: ${errorRate}
-             |rowIds: ${buffer.toList}
-             |""".stripMargin)
+//        println(
+//          s"""
+//             |### gen bf ###
+//             |index: ${index}
+//             |fileName: ${StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/")}
+//             |bf: ${bf.serializeToString()}
+//             |numEntries: ${numEntries}
+//             |errorRate: ${errorRate}
+//             |rowIds: ${buffer.toList}
+//             |""".stripMargin)
         List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
       } else {
-        println(
-          s"""
-             |### gen bf ###
-             |index: ${index}
-             |fileName:
-             |bf: 
-             |numEntries: ${numEntries}
-             |errorRate: ${errorRate}
-             |rowIds: ${buffer.toList}
-             |""".stripMargin)
+//        println(
+//          s"""
+//             |### gen bf ###
+//             |index: ${index}
+//             |fileName:
+//             |bf:
+//             |numEntries: ${numEntries}
+//             |errorRate: ${errorRate}
+//             |rowIds: ${buffer.toList}
+//             |""".stripMargin)
         List[BFItem]().iterator
       }
 
