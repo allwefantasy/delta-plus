@@ -1,15 +1,16 @@
 package org.apache.spark.sql.delta.commands
 
-import java.util.UUID
+import java.util.{Date, TimeZone, UUID}
 
 import org.apache.commons.lang.StringUtils
 import org.apache.hadoop.fs.Path
 import org.apache.spark.Partitioner
+import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions._
 import org.apache.spark.sql.delta.files.TahoeBatchFileIndex
 import org.apache.spark.sql.delta.schema.{ImplicitMetadataOperation, SchemaUtils}
-import org.apache.spark.sql.delta.sources.BFItem
+import org.apache.spark.sql.delta.sources.{BFItem, FullOuterJoinRow}
 import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.execution.streaming.StreamExecution
@@ -51,7 +52,9 @@ case class UpsertTableInDelta(_data: Dataset[_],
       case Some(mode) =>
         deltaLog.withNewTransaction { txn =>
           txn.readWholeTable()
-          updateMetadata(txn, _data, partitionColumns, configuration, false)
+          if (!upsertConf.isPartialMerge) {
+            updateMetadata(txn, _data, partitionColumns, configuration, false)
+          }
           actions = upsert(txn, sparkSession, runId)
           val operation = DeltaOperations.Write(SaveMode.Overwrite,
             Option(partitionColumns),
@@ -72,13 +75,14 @@ case class UpsertTableInDelta(_data: Dataset[_],
           txn.readWholeTable()
           // Streaming sinks can't blindly overwrite schema.
           // See Schema Management design doc for details
-          updateMetadata(
-            txn,
-            _data,
-            partitionColumns,
-            configuration = Map.empty,
-            false)
-
+          if (!upsertConf.isPartialMerge) {
+            updateMetadata(
+              txn,
+              _data,
+              partitionColumns,
+              configuration = Map.empty,
+              false)
+          }
           val currentVersion = txn.txnVersion(queryId)
           val batchId = configuration(UpsertTableInDelta.BATCH_ID).toLong
           if (currentVersion >= batchId) {
@@ -134,6 +138,10 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
     val sourceSchema = if (upsertConf.isInitial) data.schema else snapshot.schema
 
+
+    if (upsertConf.isInitial && upsertConf.isPartialMerge) {
+      throw new RuntimeException(s"Please init the table or disable ${UpsertTableInDelta.PARTIAL_MERGE}")
+    }
 
     if (upsertConf.isInitial) {
 
@@ -241,31 +249,73 @@ case class UpsertTableInDelta(_data: Dataset[_],
     // we should get  not changed records in affected files and write them back again
     val affectedRecords = deltaLog.createDataFrame(snapshot, filesAreAffectedWithDeltaFormat, false)
 
-    var notChangedRecords = affectedRecords.join(data,
-      usingColumns = idColsList, joinType = "leftanti").
-      drop(F.col(UpsertTableInDelta.FILE_NAME))
+    if (upsertConf.isPartialMerge) {
+      // new data format: {IDs... value:...}  value should be JSon/StructType,so we can merge it into table
+      // the order of fields are important
+      val newDF = affectedRecords.join(data,
+        usingColumns = idColsList, joinType = "fullOuter")
+      val sourceLen = sourceSchema.fields.length
+      val sourceSchemaSeq = sourceSchema.map(f => f.name)
+      val targetSchemaSeq = data.schema.map(f => f.name)
+      val targetLen = data.schema.length
 
-    if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
-      notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
-    } else {
-      // since new data will generate 1 file, and we should make sure new files from old files decrease one.
-      if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
-        notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length - 1)
+      val targetValueName = targetSchemaSeq.filterNot(name => idColsList.contains(name)).head
+      val targetValueIndex = targetSchemaSeq.indexOf(targetValueName)
+      val targetValueType = data.schema.filter(f => f.name == targetValueName).head.dataType
+      val timeZone = data.sparkSession.sessionState.conf.sessionLocalTimeZone
+
+      val newRDD = newDF.rdd.map { row =>
+        //split row to two row
+        val leftRow = Row.fromSeq((0 until sourceLen).map(row.get(_)))
+        val rightRow = Row.fromSeq((sourceLen until (sourceLen + targetLen-idColsList.size)).map(row.get(_)))
+
+        FullOuterJoinRow(leftRow, rightRow,
+          !UpsertTableInDelta.isKeyAllNull(leftRow, idColsList, sourceSchemaSeq),
+          !UpsertTableInDelta.isKeyAllNull(rightRow, idColsList, targetSchemaSeq))
+      }.map { row: FullOuterJoinRow =>
+        new UpsertMergeJsonToRow(row, sourceSchema, 0, timeZone).output
       }
+
+      val newTempData = sparkSession.createDataFrame(newRDD, sourceSchema)
+      val newFiles = if (!isDelete) {
+        txn.writeFiles(newTempData, Some(options))
+      } else Seq()
+
+      if (upsertConf.isBloomFilterEnable) {
+        upsertBF.generateBFForParquetFile(sourceSchema, newFiles, deletedFiles)
+      }
+      logInfo(s"Update info: newFiles:${newFiles.size}  deletedFiles:${deletedFiles.size}")
+      newFiles ++ deletedFiles
+
+    } else {
+      var notChangedRecords = affectedRecords.join(data,
+        usingColumns = idColsList, joinType = "leftanti").
+        drop(F.col(UpsertTableInDelta.FILE_NAME))
+
+      if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
+        notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
+      } else {
+        // since new data will generate 1 file, and we should make sure new files from old files decrease one.
+        if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
+          notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length - 1)
+        }
+      }
+
+      val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
+
+      val newFiles = if (!isDelete) {
+        val newTempData = data.repartition(1)
+        txn.writeFiles(newTempData, Some(options))
+      } else Seq()
+
+      if (upsertConf.isBloomFilterEnable) {
+        upsertBF.generateBFForParquetFile(sourceSchema, notChangedRecordsNewFiles ++ newFiles, deletedFiles)
+      }
+      logInfo(s"Update info: newFiles:${newFiles.size} notChangedRecordsNewFiles:${notChangedRecordsNewFiles.size} deletedFiles:${deletedFiles.size}")
+      notChangedRecordsNewFiles ++ newFiles ++ deletedFiles
     }
 
-    val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
 
-    val newFiles = if (!isDelete) {
-      val newTempData = data.repartition(1)
-      txn.writeFiles(newTempData, Some(options))
-    } else Seq()
-
-    if (upsertConf.isBloomFilterEnable) {
-      upsertBF.generateBFForParquetFile(sourceSchema, notChangedRecordsNewFiles ++ newFiles, deletedFiles)
-    }
-    logInfo(s"Update info: newFiles:${newFiles.size} notChangedRecordsNewFiles:${notChangedRecordsNewFiles.size} deletedFiles:${deletedFiles.size}")
-    notChangedRecordsNewFiles ++ newFiles ++ deletedFiles
   }
 
   override protected val canMergeSchema: Boolean = false
@@ -282,13 +332,19 @@ object UpsertTableInDelta {
   val OPERATION_TYPE_DELETE = "delete"
   val DROP_DUPLICATE = "dropDuplicate"
 
-  val PARTIAL_MERGE = "partial_merge"
+  val PARTIAL_MERGE = "partialMerge"
 
   val FILE_NUM = "fileNum"
   val BLOOM_FILTER_ENABLE = "bloomFilterEnable"
 
   def getKey(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
     getColStrs(row, idColsList, schemaNames)
+  }
+
+  def isKeyAllNull(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
+    idColsList.sorted.map(col => schemaNames.indexOf(col)).count { col =>
+      row.get(col) == null
+    } == idColsList.length
   }
 
   def getColStrs(row: Row, cols: Seq[String], schemaNames: Seq[String]) = {
@@ -318,6 +374,12 @@ class UpsertTableInDeltaConf(configuration: Map[String, String], @transient val 
     val readVersion = deltaLog.snapshot.version
     val isInitial = readVersion < 0
     isInitial
+  }
+
+  def isPartialMerge = {
+    configuration
+      .getOrElse(UpsertTableInDelta.PARTIAL_MERGE,
+        "false").toBoolean
   }
 
   def bfErrorRate = {
@@ -513,6 +575,72 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
       }
 
     }.repartition(1).toDF().as[BFItem].write.mode(SaveMode.Append).parquet(newBFPath)
+  }
+}
+
+class UpsertMergeJsonToRow(row: FullOuterJoinRow, schema: StructType, targetValueIndex: Int, defaultTimeZone: String) {
+  val timeZone: TimeZone = DateTimeUtils.getTimeZone(defaultTimeZone)
+
+
+  private def parseJson(jsonStr: String, callback: (String, Any) => Unit) = {
+    import org.json4s._
+    import org.json4s.jackson.JsonMethods._
+    val obj = parse(jsonStr)
+    obj.asInstanceOf[JObject].obj.foreach { f =>
+      val dataType = schema.filter(field => field.name == f._1).head.dataType
+      val value = f._2 match {
+        //        case JArray(arr) =>
+        //        case JObject(obj)=>
+        case JBool(v) => v
+        case JNull => null
+        //        case JNothing =>
+        case JDouble(v) => v
+        case JInt(v) =>
+          dataType match {
+            case IntegerType =>
+              v
+          }
+        case JLong(v) =>
+          dataType match {
+            case TimestampType =>
+              new Date(v)
+            case DateType =>
+              new Date(v)
+            case LongType =>
+              v
+          }
+        case JString(v) => v
+
+      }
+      callback(f._1, value)
+    }
+  }
+
+  private def merge(left: Row, right: Row) = {
+    val tempRow = left.toSeq.toArray
+    parseJson(right.getAs[String](targetValueIndex), (k, v) => {
+      left.toSeq.zipWithIndex.map { wow =>
+        val index = wow._2
+        val value = wow._1
+        tempRow(index) = if (schema.fieldIndex(k) == index) v else value
+      }
+    })
+    Row.fromSeq(tempRow)
+  }
+
+  def output = {
+    row match {
+      case FullOuterJoinRow(left, right, true, true) =>
+        // upsert
+        merge(left, right)
+
+      case FullOuterJoinRow(left, right, true, false) =>
+        // no change
+        left
+      case FullOuterJoinRow(left, right, false, true) =>
+        // append
+        merge(left, right)
+    }
   }
 }
 
