@@ -41,6 +41,10 @@ public class BloomFilter {
         this(numEntries, errorRate, Hash.MURMUR_HASH);
     }
 
+    public int size() {
+        return this.filter.getVectorSize();
+    }
+
     /**
      * Create a new Bloom filter with the given configurations.
      */

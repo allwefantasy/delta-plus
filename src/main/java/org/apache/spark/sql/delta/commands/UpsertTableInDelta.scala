@@ -203,14 +203,20 @@ case class UpsertTableInDelta(_data: Dataset[_],
     // filter files are affected by BF
     val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
     val filesAreAffectedWithDeltaFormat = if (upsertConf.isBloomFilterEnable && deltaLog.fs.exists(bfPath)) {
-      val bfItemsBr = sparkSession.sparkContext.broadcast(sparkSession.read.parquet(bfPath.toUri.getPath).as[BFItem].collect())
       val schemaNames = data.schema.map(f => f.name)
-      val affectedFilePaths = data.mapPartitions { rowIter =>
-        val containers = bfItemsBr.value.map(bfItem => (new BloomFilter(bfItem.bf), bfItem.fileName))
-        rowIter.flatMap { row =>
-          containers.filter(c => c._1.mightContain(UpsertTableInDelta.getKey(row.asInstanceOf[Row], idColsList, schemaNames))).map(c => c._2)
+      val dataBr = sparkSession.sparkContext.broadcast(data.collect())
+      val affectedFilePaths = sparkSession.read.parquet(bfPath.toUri.getPath).as[BFItem].flatMap { bfItem =>
+        val bf = new BloomFilter(bfItem.bf)
+        var dataInBf = false
+        dataBr.value.foreach { row =>
+          if (!dataInBf) {
+            val key = UpsertTableInDelta.getKey(row.asInstanceOf[Row], idColsList, schemaNames)
+            dataInBf = bf.mightContain(key)
+          }
+
         }
-      }.as[String].distinct().collect()
+        if (dataInBf) List(bfItem.fileName) else List()
+      }.as[String].collect()
       filterFiles.filter(f => affectedFilePaths.contains(f.path))
     } else {
       // filter files are affected by anti join
@@ -443,14 +449,14 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
       createDataFrame(realAddFiles, false).withColumn(UpsertTableInDelta.FILE_NAME, F.input_file_name())
     }
     val FILE_NAME = UpsertTableInDelta.FILE_NAME
-//    println(
-//      s"""
-//         |###  bf stat ###
-//         |fileNumber: ${realAddFiles.size}
-//         |realAddFiles: ${realAddFiles.map(f => f.path).toSeq}
-//         |deletedFiles: ${deletedFiles.map(f => f.path).toSeq}
-//         |mapPartitions: ${df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.partitions.size}
-//         |""".stripMargin)
+    //    println(
+    //      s"""
+    //         |###  bf stat ###
+    //         |fileNumber: ${realAddFiles.size}
+    //         |realAddFiles: ${realAddFiles.map(f => f.path).toSeq}
+    //         |deletedFiles: ${deletedFiles.map(f => f.path).toSeq}
+    //         |mapPartitions: ${df.repartition(realAddFiles.size, F.col(FILE_NAME)).rdd.partitions.size}
+    //         |""".stripMargin)
 
     val schemaNames = df.schema.map(f => f.name)
     val errorRate = upsertConf.bfErrorRate
@@ -464,7 +470,7 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
       override def numPartitions: Int = fileNum
 
       override def getPartition(key: Any): Int = fileWithIndex(StringUtils.splitByWholeSeparator(key.toString, deltaPathPrefix).last.stripPrefix("/"))
-    }).map(f=>f._2).mapPartitionsWithIndex { (index, iter) =>
+    }).map(f => f._2).mapPartitionsWithIndex { (index, iter) =>
       val buffer = new ArrayBuffer[String]()
       var fileName: String = null
       var numEntries = 0
@@ -481,28 +487,28 @@ class UpsertBF(upsertConf: UpsertTableInDeltaConf, runId: String) {
         buffer.foreach { rowId =>
           bf.add(rowId)
         }
-//        println(
-//          s"""
-//             |### gen bf ###
-//             |index: ${index}
-//             |fileName: ${StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/")}
-//             |bf: ${bf.serializeToString()}
-//             |numEntries: ${numEntries}
-//             |errorRate: ${errorRate}
-//             |rowIds: ${buffer.toList}
-//             |""".stripMargin)
-        List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString())).iterator
+        //        println(
+        //          s"""
+        //             |### gen bf ###
+        //             |index: ${index}
+        //             |fileName: ${StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/")}
+        //             |bf: ${bf.serializeToString()}
+        //             |numEntries: ${numEntries}
+        //             |errorRate: ${errorRate}
+        //             |rowIds: ${buffer.toList}
+        //             |""".stripMargin)
+        List[BFItem](BFItem(StringUtils.splitByWholeSeparator(fileName, deltaPathPrefix).last.stripPrefix("/"), bf.serializeToString(), bf.size(), (bf.size() / 8d / 1024 / 1024) + "m")).iterator
       } else {
-//        println(
-//          s"""
-//             |### gen bf ###
-//             |index: ${index}
-//             |fileName:
-//             |bf:
-//             |numEntries: ${numEntries}
-//             |errorRate: ${errorRate}
-//             |rowIds: ${buffer.toList}
-//             |""".stripMargin)
+        //        println(
+        //          s"""
+        //             |### gen bf ###
+        //             |index: ${index}
+        //             |fileName:
+        //             |bf:
+        //             |numEntries: ${numEntries}
+        //             |errorRate: ${errorRate}
+        //             |rowIds: ${buffer.toList}
+        //             |""".stripMargin)
         List[BFItem]().iterator
       }
 
