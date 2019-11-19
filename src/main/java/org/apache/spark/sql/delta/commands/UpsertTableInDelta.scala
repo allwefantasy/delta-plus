@@ -11,10 +11,8 @@ import org.apache.spark.sql.execution.command.RunnableCommand
 import org.apache.spark.sql.execution.streaming.StreamExecution
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{DataFrame, Dataset, Row, SaveMode, SparkSession, functions => F}
+import org.apache.spark.sql.{Dataset, Row, SaveMode, SparkSession, functions => F}
 import tech.mlsql.common.BloomFilter
-
-import scala.collection.mutable.ArrayBuffer
 
 case class UpsertTableInDelta(_data: Dataset[_],
                               saveMode: Option[SaveMode],
@@ -207,13 +205,13 @@ case class UpsertTableInDelta(_data: Dataset[_],
     val bfPath = new Path(deltaLog.dataPath, "_bf_index_" + deltaLog.snapshot.version)
     val filesAreAffectedWithDeltaFormat = if (upsertConf.isBloomFilterEnable && deltaLog.fs.exists(bfPath)) {
       val schemaNames = data.schema.map(f => f.name)
-      val dataBr = sparkSession.sparkContext.broadcast(data.collect())
+      val dataBr = sparkSession.sparkContext.broadcast(data.select(idColsList.map(F.col(_)): _*).collect())
       val affectedFilePaths = sparkSession.read.parquet(bfPath.toUri.getPath).as[BFItem].flatMap { bfItem =>
         val bf = new BloomFilter(bfItem.bf)
         var dataInBf = false
         dataBr.value.foreach { row =>
           if (!dataInBf) {
-            val key = UpsertTableInDelta.getKey(row.asInstanceOf[Row], idColsList, schemaNames)
+            val key = row.asInstanceOf[Row].toSeq.mkString("_")
             dataInBf = bf.mightContain(key)
           }
 
@@ -262,7 +260,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       val newRDD = newDF.rdd.map { row =>
         //split row to two row
         val leftRow = Row.fromSeq((0 until sourceLen).map(row.get(_)))
-        val rightRow = Row.fromSeq((sourceLen until (sourceLen + targetLen-idColsList.size)).map(row.get(_)))
+        val rightRow = Row.fromSeq((sourceLen until (sourceLen + targetLen - idColsList.size)).map(row.get(_)))
 
         FullOuterJoinRow(leftRow, rightRow,
           !UpsertTableInDelta.isKeyAllNull(leftRow, idColsList, sourceSchemaSeq),
