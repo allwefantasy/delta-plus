@@ -57,6 +57,9 @@ class UpsertTableInDeltaConf(configuration: Map[String, String], @transient val 
     idCols.split(",").filterNot(_.isEmpty).toSeq
   }
 
+  def toIdCols = {
+    idColsList.map { col => F.col(col) }
+  }
 
 }
 

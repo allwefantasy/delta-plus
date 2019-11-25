@@ -269,7 +269,9 @@ case class UpsertTableInDelta(_data: Dataset[_],
         new UpsertMergeJsonToRow(row, sourceSchema, 0, timeZone).output
       }
 
-      val newTempData = sparkSession.createDataFrame(newRDD, sourceSchema)
+      val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
+      val newTempData = sparkSession.createDataFrame(newRDD, sourceSchema).repartitionByRange(finalNumIfKeepFileNum, upsertConf.toIdCols:_*)
+
       val newFiles = if (!isDelete) {
         txn.writeFiles(newTempData, Some(options))
       } else Seq()
@@ -287,18 +289,18 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
       val newFiles = if (isDelete) {
         if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
-          notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
+          notChangedRecords = notChangedRecords.repartitionByRange(configuration(UpsertTableInDelta.FILE_NUM).toInt,upsertConf.toIdCols:_*)
         } else {
           // since new data will generate 1 file, and we should make sure new files from old files decrease one.
           if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
-            notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length)
+            notChangedRecords = notChangedRecords.repartitionByRange(filesAreAffectedWithDeltaFormat.length, upsertConf.toIdCols:_*)
           }
         }
         txn.writeFiles(notChangedRecords, Some(options))
       } else {
         var newTempData = data.toDF().union(notChangedRecords)
-        val finalNumIfKeepFileNum =  if(deletedFiles.size==0) 1 else deletedFiles.size
-        newTempData = if (upsertConf.keepFileNum()) newTempData.repartition(finalNumIfKeepFileNum) else newTempData
+        val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
+        newTempData = if (upsertConf.keepFileNum()) newTempData.repartitionByRange(finalNumIfKeepFileNum,upsertConf.toIdCols:_*) else newTempData
         txn.writeFiles(newTempData, Some(options))
       }
 
