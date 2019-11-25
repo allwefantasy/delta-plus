@@ -22,6 +22,10 @@ class UpsertTableInDeltaConf(configuration: Map[String, String], @transient val 
     configuration.get(UpsertTableInDelta.DROP_DUPLICATE).map(_.toBoolean).getOrElse(false)
   }
 
+  def keepFileNum() = {
+    configuration.get(UpsertTableInDelta.KEEP_FILE_NUM).map(_.toBoolean).getOrElse(true)
+  }
+
   def isBloomFilterEnable = {
     configuration.getOrElse(UpsertTableInDelta.BLOOM_FILTER_ENABLE, "false").toBoolean
   }

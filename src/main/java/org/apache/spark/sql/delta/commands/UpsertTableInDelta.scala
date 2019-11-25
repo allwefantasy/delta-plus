@@ -285,27 +285,28 @@ case class UpsertTableInDelta(_data: Dataset[_],
         usingColumns = idColsList, joinType = "leftanti").
         drop(F.col(UpsertTableInDelta.FILE_NAME))
 
-      if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
-        notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
-      } else {
-        // since new data will generate 1 file, and we should make sure new files from old files decrease one.
-        if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
-          notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length - 1)
+      val newFiles = if (isDelete) {
+        if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
+          notChangedRecords = notChangedRecords.repartition(configuration(UpsertTableInDelta.FILE_NUM).toInt)
+        } else {
+          // since new data will generate 1 file, and we should make sure new files from old files decrease one.
+          if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
+            notChangedRecords = notChangedRecords.repartition(filesAreAffectedWithDeltaFormat.length)
+          }
         }
-      }
-
-      val notChangedRecordsNewFiles = txn.writeFiles(notChangedRecords, Some(options))
-
-      val newFiles = if (!isDelete) {
-        val newTempData = data.repartition(1)
+        txn.writeFiles(notChangedRecords, Some(options))
+      } else {
+        var newTempData = data.toDF().union(notChangedRecords)
+        val finalNumIfKeepFileNum =  if(deletedFiles.size==0) 1 else deletedFiles.size
+        newTempData = if (upsertConf.keepFileNum()) newTempData.repartition(finalNumIfKeepFileNum) else newTempData
         txn.writeFiles(newTempData, Some(options))
-      } else Seq()
+      }
 
       if (upsertConf.isBloomFilterEnable) {
-        upsertBF.generateBFForParquetFile(sourceSchema, notChangedRecordsNewFiles ++ newFiles, deletedFiles)
+        upsertBF.generateBFForParquetFile(sourceSchema, newFiles, deletedFiles)
       }
-      logInfo(s"Update info: newFiles:${newFiles.size} notChangedRecordsNewFiles:${notChangedRecordsNewFiles.size} deletedFiles:${deletedFiles.size}")
-      notChangedRecordsNewFiles ++ newFiles ++ deletedFiles
+      logInfo(s"Update info: newFiles:${newFiles.size} deletedFiles:${deletedFiles.size}")
+      newFiles ++ deletedFiles
     }
 
 
@@ -324,6 +325,7 @@ object UpsertTableInDelta {
   val OPERATION_TYPE_UPSERT = "upsert"
   val OPERATION_TYPE_DELETE = "delete"
   val DROP_DUPLICATE = "dropDuplicate"
+  val KEEP_FILE_NUM = "keepFileNum"
 
   val PARTIAL_MERGE = "partialMerge"
 
