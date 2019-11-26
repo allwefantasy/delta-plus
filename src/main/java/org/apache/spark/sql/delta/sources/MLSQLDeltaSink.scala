@@ -57,7 +57,12 @@ class MLSQLDeltaSink(
     }
 
     if (!successFlag) {
-      throw lastException
+      if (lastException != null) {
+        throw lastException
+      } else {
+        throw new RuntimeException("should not happen")
+      }
+
     }
 
 
