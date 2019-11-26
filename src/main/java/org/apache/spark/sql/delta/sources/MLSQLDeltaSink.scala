@@ -41,17 +41,23 @@ class MLSQLDeltaSink(
 
     val TRY_MAX_TIMES = 3
     var count = 0L
-    var breakFlag = false
-    while (count <= TRY_MAX_TIMES && !breakFlag) {
+    var successFlag = false
+    var lastException: DeltaConcurrentModificationException = null
+    while (count <= TRY_MAX_TIMES && !successFlag) {
       try {
         _run
-        breakFlag = true
+        successFlag = true
       } catch {
         case e: DeltaConcurrentModificationException =>
           count += 1
+          lastException = e
           logWarning(s"try ${count} times", e)
         case e: Exception => throw e;
       }
+    }
+
+    if (!successFlag) {
+      throw lastException
     }
 
 
