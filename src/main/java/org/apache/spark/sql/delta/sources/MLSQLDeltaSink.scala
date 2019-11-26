@@ -27,32 +27,32 @@ class MLSQLDeltaSink(
 
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
 
-
-    if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
-      def _run() = {
+    def _run = {
+      if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
         UpsertTableInDelta(data, None, Option(outputMode), deltaLog,
           new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
           Seq(),
           parameters ++ Map(UpsertTableInDelta.BATCH_ID -> batchId.toString)).run(sqlContext.sparkSession)
+
+      } else {
+        super.addBatch(batchId, data)
       }
-
-      val TRY_MAX_TIMES = 3
-      var count = 0L
-      while (count <= TRY_MAX_TIMES) {
-        try {
-          _run
-          count += Long.MaxValue
-        } catch {
-          case e: DeltaConcurrentModificationException =>
-            count += 1
-            logInfo(s"try ${count} times", e)
-          case e: Exception => throw e;
-        }
-      }
-
-
-    } else {
-      super.addBatch(batchId, data)
     }
+
+    val TRY_MAX_TIMES = 3
+    var count = 0L
+    while (count <= TRY_MAX_TIMES) {
+      try {
+        _run
+        count += Long.MaxValue
+      } catch {
+        case e: DeltaConcurrentModificationException =>
+          count += 1
+          logWarning(s"try ${count} times", e)
+        case e: Exception => throw e;
+      }
+    }
+
+
   }
 }
