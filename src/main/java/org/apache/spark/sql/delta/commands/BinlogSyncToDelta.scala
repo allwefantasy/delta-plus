@@ -21,7 +21,7 @@ object BinlogSyncToDelta extends DeltaCommandsFun {
     val newDataParallelNum = options.getOrElse(UpsertTableInDelta.NEW_DATA_PARALLEL_NUM, "8").toInt
     var ds = convertStreamDataFrame(_ds).asInstanceOf[Dataset[Row]]
     if (newDataParallelNum != ds.rdd.partitions.size) {
-      ds = ds.repartitionByRange(newDataParallelNum, idCols.map(F.col(_)): _*)
+      ds = ds.repartition(newDataParallelNum)
     }
     ds.cache()
     try {
