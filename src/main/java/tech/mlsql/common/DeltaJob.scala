@@ -7,7 +7,7 @@ import org.apache.spark.sql.delta.metering.DeltaLogging
  * 28/11/2019 WilliamZhu(allwefantasy@gmail.com)
  */
 object DeltaJob extends DeltaLogging {
-  def runWithTry(f: () => {}, tryTimes: Int = 3) = {
+  def runWithTry(f: () => Unit, tryTimes: Int = 3) = {
     val TRY_MAX_TIMES = tryTimes
     var count = 0L
     var successFlag = false
