@@ -17,7 +17,12 @@ import scala.util.Try
  */
 object BinlogSyncToDelta extends DeltaCommandsFun {
   def run(_ds: Dataset[Row], options: Map[String, String]): Unit = {
-    val ds = convertStreamDataFrame(_ds).asInstanceOf[Dataset[Row]]
+    val idCols = options(UpsertTableInDelta.ID_COLS).split(",").toSeq
+    val newDataParallelNum = options.getOrElse(UpsertTableInDelta.NEW_DATA_PARALLEL_NUM, "8").toInt
+    var ds = convertStreamDataFrame(_ds).asInstanceOf[Dataset[Row]]
+    if (newDataParallelNum != ds.rdd.partitions.size) {
+      ds = ds.repartitionByRange(newDataParallelNum, idCols.map(F.col(_)): _*)
+    }
     ds.cache()
     try {
       if (options.getOrElse(MLSQLMultiDeltaOptions.KEEP_BINLOG, "false").toBoolean) {
@@ -28,7 +33,6 @@ object BinlogSyncToDelta extends DeltaCommandsFun {
         ds.count()
       }
 
-      val idCols = options(UpsertTableInDelta.ID_COLS).split(",").toSeq
 
       def _getInfoFromMeta(record: JSONObject, key: String) = {
         record.getJSONObject(MLSQLMultiDeltaOptions.META_KEY).getString(key)
@@ -93,7 +97,7 @@ object BinlogSyncToDelta extends DeltaCommandsFun {
           val deleteDF = spark.createDataset[String](tempRDD).toDF("value").select(newColumnFromJsonStr.as("data"))
             .select("data.*")
           var path = options(MLSQLMultiDeltaOptions.FULL_PATH_KEY)
-          
+
           val tablePath = path.replace("{db}", table.db).replace("{table}", table.table)
           val deltaLog = DeltaLog.forTable(spark, tablePath)
 

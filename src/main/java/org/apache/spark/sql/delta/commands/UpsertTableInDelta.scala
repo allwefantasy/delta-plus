@@ -346,6 +346,7 @@ object UpsertTableInDelta {
   val SYNC_TYPE = "syncType"
   val SYNC_TYPE_BINLOG = "binlog"
   val SYNC_TYPE_NORMAL = "normal"
+  val NEW_DATA_PARALLEL_NUM = "newDataParallelNum"
 
   def getKey(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
     getColStrs(row, idColsList, schemaNames)
