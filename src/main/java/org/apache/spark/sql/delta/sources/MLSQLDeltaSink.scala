@@ -2,7 +2,7 @@ package org.apache.spark.sql.delta.sources
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.delta._
-import org.apache.spark.sql.delta.commands.UpsertTableInDelta
+import org.apache.spark.sql.delta.commands.{BinlogSyncToDelta, UpsertTableInDelta}
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import tech.mlsql.common.DeltaJob
@@ -28,7 +28,7 @@ class MLSQLDeltaSink(
 
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
     if (parameters.getOrElse(UpsertTableInDelta.SYNC_TYPE, UpsertTableInDelta.SYNC_TYPE_NORMAL) == UpsertTableInDelta.SYNC_TYPE_BINLOG) {
-
+      new BinlogSyncToDelta().run(data, parameters)
       return
     }
 
