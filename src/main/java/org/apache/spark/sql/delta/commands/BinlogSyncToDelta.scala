@@ -6,7 +6,7 @@ import org.apache.spark.sql.catalyst.expressions.JsonToStructs
 import org.apache.spark.sql.catalyst.parser.LegacyTypeStringParser
 import org.apache.spark.sql.delta.{DeltaLog, DeltaOptions, MLSQLMultiDeltaOptions, TableMetaInfo}
 import org.apache.spark.sql.types.{DataType, StructType}
-import org.apache.spark.sql.{Column, Dataset, Row, SaveMode, functions=>F}
+import org.apache.spark.sql.{Column, Dataset, Row, SaveMode, functions => F}
 import tech.mlsql.common.utils.Md5
 
 import scala.collection.JavaConverters._
@@ -15,8 +15,9 @@ import scala.util.Try
 /**
  * 28/11/2019 WilliamZhu(allwefantasy@gmail.com)
  */
-class BinlogSyncToDelta {
-  def run(ds: Dataset[Row], options: Map[String, String]) = {
+object BinlogSyncToDelta extends DeltaCommandsFun {
+  def run(_ds: Dataset[Row], options: Map[String, String]): Unit = {
+    val ds = convertStreamDataFrame(_ds).asInstanceOf[Dataset[Row]]
     ds.cache()
     try {
       if (options.getOrElse(MLSQLMultiDeltaOptions.KEEP_BINLOG, "false").toBoolean) {
@@ -88,10 +89,11 @@ class BinlogSyncToDelta {
           }
 
           val sourceSchema = deserializeSchema(table.schema)
-          val newColumnFromJsonStr = new Column(new JsonToStructs(sourceSchema, options,F.col("value").expr,None))
+          val newColumnFromJsonStr = new Column(JsonToStructs(sourceSchema, options, F.col("value").expr, None))
           val deleteDF = spark.createDataset[String](tempRDD).toDF("value").select(newColumnFromJsonStr.as("data"))
             .select("data.*")
-          val path = options(MLSQLMultiDeltaOptions.FULL_PATH_KEY)
+          var path = options(MLSQLMultiDeltaOptions.FULL_PATH_KEY)
+          
           val tablePath = path.replace("{db}", table.db).replace("{table}", table.table)
           val deltaLog = DeltaLog.forTable(spark, tablePath)
 
