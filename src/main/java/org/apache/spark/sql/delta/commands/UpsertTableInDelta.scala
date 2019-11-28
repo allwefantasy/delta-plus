@@ -24,7 +24,27 @@ case class UpsertTableInDelta(_data: Dataset[_],
                              ) extends RunnableCommand
   with ImplicitMetadataOperation
   with DeltaCommand with DeltaCommandsFun {
+
   override def run(sparkSession: SparkSession): Seq[Row] = {
+    val TRY_MAX_TIMES = 3
+    var count = 0L
+    var breakFlag = false
+    var res = Seq[Row]()
+    while (count <= TRY_MAX_TIMES && !breakFlag) {
+      try {
+        res = _run(sparkSession)
+        breakFlag = true
+      } catch {
+        case e: DeltaConcurrentModificationException =>
+          count += 1
+          logWarning(s"try ${count} times", e)
+        case e: Exception => throw e;
+      }
+    }
+    res
+  }
+
+  def _run(sparkSession: SparkSession): Seq[Row] = {
     val runId = UUID.randomUUID().toString
     assert(configuration.contains(UpsertTableInDelta.ID_COLS), "idCols is required ")
 
@@ -270,7 +290,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       }
 
       val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
-      val newTempData = sparkSession.createDataFrame(newRDD, sourceSchema).repartitionByRange(finalNumIfKeepFileNum, upsertConf.toIdCols:_*)
+      val newTempData = sparkSession.createDataFrame(newRDD, sourceSchema).repartitionByRange(finalNumIfKeepFileNum, upsertConf.toIdCols: _*)
 
       val newFiles = if (!isDelete) {
         txn.writeFiles(newTempData, Some(options))
@@ -289,18 +309,18 @@ case class UpsertTableInDelta(_data: Dataset[_],
 
       val newFiles = if (isDelete) {
         if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
-          notChangedRecords = notChangedRecords.repartitionByRange(configuration(UpsertTableInDelta.FILE_NUM).toInt,upsertConf.toIdCols:_*)
+          notChangedRecords = notChangedRecords.repartitionByRange(configuration(UpsertTableInDelta.FILE_NUM).toInt, upsertConf.toIdCols: _*)
         } else {
           // since new data will generate 1 file, and we should make sure new files from old files decrease one.
           if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
-            notChangedRecords = notChangedRecords.repartitionByRange(filesAreAffectedWithDeltaFormat.length, upsertConf.toIdCols:_*)
+            notChangedRecords = notChangedRecords.repartitionByRange(filesAreAffectedWithDeltaFormat.length, upsertConf.toIdCols: _*)
           }
         }
         txn.writeFiles(notChangedRecords, Some(options))
       } else {
         var newTempData = data.toDF().union(notChangedRecords)
         val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
-        newTempData = if (upsertConf.keepFileNum()) newTempData.repartitionByRange(finalNumIfKeepFileNum,upsertConf.toIdCols:_*) else newTempData
+        newTempData = if (upsertConf.keepFileNum()) newTempData.repartitionByRange(finalNumIfKeepFileNum, upsertConf.toIdCols: _*) else newTempData
         txn.writeFiles(newTempData, Some(options))
       }
 

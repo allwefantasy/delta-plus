@@ -26,34 +26,27 @@ class MLSQLDeltaSink(
   private val sqlConf = sqlContext.sparkSession.sessionState.conf
 
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
-
-    def _run = {
-      if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
-        UpsertTableInDelta(data, None, Option(outputMode), deltaLog,
-          new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
-          Seq(),
-          parameters ++ Map(UpsertTableInDelta.BATCH_ID -> batchId.toString)).run(sqlContext.sparkSession)
-
-      } else {
-        super.addBatch(batchId, data)
+    if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
+      UpsertTableInDelta(data, None, Option(outputMode), deltaLog,
+        new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
+        Seq(),
+        parameters ++ Map(UpsertTableInDelta.BATCH_ID -> batchId.toString)).run(sqlContext.sparkSession)
+    } else {
+      val TRY_MAX_TIMES = 3
+      var count = 0L
+      var breakFlag = false
+      while (count <= TRY_MAX_TIMES && !breakFlag) {
+        try {
+          super.addBatch(batchId, data)
+          breakFlag = true
+        } catch {
+          case e: DeltaConcurrentModificationException =>
+            count += 1
+            logWarning(s"try ${count} times", e)
+          case e: Exception => throw e;
+        }
       }
+
     }
-
-    val TRY_MAX_TIMES = 3
-    var count = 0L
-    var breakFlag = false
-    while (count <= TRY_MAX_TIMES && !breakFlag) {
-      try {
-        _run
-        breakFlag = true
-      } catch {
-        case e: DeltaConcurrentModificationException =>
-          count += 1
-          logWarning(s"try ${count} times", e)
-        case e: Exception => throw e;
-      }
-    }
-
-
   }
 }
