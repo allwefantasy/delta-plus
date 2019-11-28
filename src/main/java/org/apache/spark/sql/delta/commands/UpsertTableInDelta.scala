@@ -343,6 +343,10 @@ object UpsertTableInDelta {
   val FILE_NUM = "fileNum"
   val BLOOM_FILTER_ENABLE = "bloomFilterEnable"
 
+  val SYNC_TYPE = "syncType"
+  val SYNC_TYPE_BINLOG = "binlog"
+  val SYNC_TYPE_NORMAL = "normal"
+
   def getKey(row: Row, idColsList: Seq[String], schemaNames: Seq[String]) = {
     getColStrs(row, idColsList, schemaNames)
   }

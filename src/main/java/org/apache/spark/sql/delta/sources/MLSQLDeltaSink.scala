@@ -27,6 +27,11 @@ class MLSQLDeltaSink(
   private val sqlConf = sqlContext.sparkSession.sessionState.conf
 
   override def addBatch(batchId: Long, data: DataFrame): Unit = {
+    if (parameters.getOrElse(UpsertTableInDelta.SYNC_TYPE, UpsertTableInDelta.SYNC_TYPE_NORMAL) == UpsertTableInDelta.SYNC_TYPE_BINLOG) {
+
+      return
+    }
+
     if (parameters.contains(UpsertTableInDelta.ID_COLS)) {
       UpsertTableInDelta(data, None, Option(outputMode), deltaLog,
         new DeltaOptions(Map[String, String](), sqlContext.sparkSession.sessionState.conf),
