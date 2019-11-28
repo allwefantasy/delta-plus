@@ -3,6 +3,7 @@ package tech.mlsql.test.delta
 import java.io.File
 
 import org.apache.spark.sql.delta.commands.UpsertTableInDelta
+import org.apache.spark.sql.delta.{ConcurrentWriteException, DeltaConcurrentModificationException}
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.streaming._
 import org.scalatest.time.SpanSugar._
@@ -23,7 +24,26 @@ class DeltaUpsertSuite extends StreamTest {
   }
 
   val deltaFormat = "org.apache.spark.sql.delta.sources.MLSQLDeltaDataSource"
+  test("test throw exception") {
+    def _run = {
+      throw new ConcurrentWriteException(None)
+    }
 
+    val TRY_MAX_TIMES = 3
+    var count = 0L
+    var breakFlag = false
+    while (count <= TRY_MAX_TIMES && !breakFlag) {
+      try {
+        _run
+        breakFlag = true
+      } catch {
+        case e: DeltaConcurrentModificationException =>
+          count += 1
+          logWarning(s"try ${count} times", e)
+        case e: Exception => throw e;
+      }
+    }
+  }
 
   test("upsert with partitions") {
     failAfter(streamingTimeout) {
