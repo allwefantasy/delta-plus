@@ -300,12 +300,13 @@ case class UpsertTableInDelta(_data: Dataset[_],
         if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
           notChangedRecords = notChangedRecords.repartitionByRange(configuration(UpsertTableInDelta.FILE_NUM).toInt, upsertConf.toIdCols: _*)
         } else {
-          // since new data will generate 1 file, and we should make sure new files from old files decrease one.
-          if (notChangedRecords.rdd.partitions.length >= filesAreAffectedWithDeltaFormat.length && filesAreAffectedWithDeltaFormat.length > 1) {
+          if (filesAreAffectedWithDeltaFormat.length > 0) {
             notChangedRecords = notChangedRecords.repartitionByRange(filesAreAffectedWithDeltaFormat.length, upsertConf.toIdCols: _*)
           }
         }
-        txn.writeFiles(notChangedRecords, Some(options))
+        if (filesAreAffectedWithDeltaFormat.length > 0) {
+          txn.writeFiles(notChangedRecords, Some(options))
+        } else Seq[AddFile]()
       } else {
         var newTempData = data.toDF().union(notChangedRecords)
         val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
@@ -316,7 +317,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
       if (upsertConf.isBloomFilterEnable) {
         upsertBF.generateBFForParquetFile(sourceSchema, newFiles, deletedFiles)
       }
-      logInfo(s"Update info: newFiles:${newFiles.size} deletedFiles:${deletedFiles.size}")
+      logInfo(s"Update info: newFiles:${newFiles.size} deletedFiles:${deletedFiles.size} ")
       newFiles ++ deletedFiles
     }
 
