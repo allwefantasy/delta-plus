@@ -3,13 +3,15 @@
 A library based on delta for Spark and [MLSQL](http://www.mlsql.tech).
   
 * JianShu [How delta works](https://www.jianshu.com/p/af55a2df2af8)
-* Medium  [How delta works](https://medium.com/@williamsmith_74955/how-delta-works-4519c62aa469)   
+* Medium  [How delta works](https://medium.com/@williamsmith_74955/how-delta-works-4519c62aa469) 
+* Video   [是时候改变你的增量同步方案了](https://www.bilibili.com/video/av78170428/)
+* ZhiHu   [是时候改变你的增量同步方案了](https://zhuanlan.zhihu.com/p/93744164)  
+
 ## Requirements
 
-This library requires Spark 2.4+ (tested).
+This library requires Spark 2.4+ (tested) and Delta 0.4.0.
 
-## Liking 
-
+## Linking 
 You can link against this library in your program at the following coordinates:
 
 ### Scala 2.11
@@ -17,18 +19,99 @@ You can link against this library in your program at the following coordinates:
 ```sql
 groupId: tech.mlsql
 artifactId: delta-plus_2.11
-version: 0.1.6
+version: 0.2.0-SNAPSHOT
 ```
 
 ## Limitation
 
 1. Compaction can not be applied to delta table which will be operated by upsert/delete action.  
 
-## Usage
 
-We have already added Upsert/Delete/Compaction features for delta 0.2.0.
+## Binlog Replay Support
 
-DataSource API:
+To incremental sync  MySQL table to Delta Lake, you should combine delta-plus with project 
+[spark-binlog](https://github.com/allwefantasy/spark-binlog).
+
+DataFrame:
+
+```scala
+val spark: SparkSession = ???
+
+val df = spark.readStream.
+format("org.apache.spark.sql.mlsql.sources.MLSQLBinLogDataSource").
+option("host","127.0.0.1").
+option("port","3306").
+option("userName","xxxxx").
+option("password","xxxxx").
+option("databaseNamePattern","mlsql_console").
+option("tableNamePattern","script_file").
+option("bingLogNamePrefix","mysql-bi-bin")
+optioin("binlogIndex","4").
+optioin("binlogFileOffset","4").
+load()
+
+
+df.writeStream.
+format("org.apache.spark.sql.delta.sources.MLSQLDeltaDataSource").  
+option("__path__","/tmp/sync/tables").
+option("mode","Append").
+option("idCols","id").
+option("duration","5").
+option("syncType","binlog").
+checkpointLocation("/tmp/cpl-binlog2")
+.mode(OutputMode.Append).save("{db}/{table}")
+```  
+
+MLSQL Code:
+
+```sql
+set streamName="binlog";
+
+load binlog.`` where 
+host="127.0.0.1"
+and port="3306"
+and userName="xxxx"
+and password="xxxxxx"
+and bingLogNamePrefix="mysql-bin"
+and binlogIndex="4"
+and binlogFileOffset="4"
+and databaseNamePattern="mlsql_console"
+and tableNamePattern="script_file"
+as table1;
+
+save append table1  
+as rate.`mysql_{db}.{table}` 
+options mode="Append"
+and idCols="id"
+and duration="5"
+and syncType="binlog"
+and checkpointLocation="/tmp/cpl-binlog2";
+
+``` 
+
+Before you run the streaming application, make sure you have fully sync the table :
+
+```
+connect jdbc where
+ url="jdbc:mysql://127.0.0.1:3306/mlsql_console?characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false"
+ and driver="com.mysql.jdbc.Driver"
+ and user="xxxxx"
+ and password="xxxx"
+ as db_cool;
+ 
+load jdbc.`db_cool.script_file`  as script_file;
+
+run script_file as TableRepartition.`` where partitionNum="2" and partitionType="range" and partitionCols="id"
+as rep_script_file;
+
+save overwrite rep_script_file as delta.`mysql_mlsql_console.script_file` ;
+
+load delta.`mysql_mlsql_console.script_file`  as output;
+```
+
+## Upsert/Delete Support
+
+DataFrame:
 
 ```scala
 
@@ -40,7 +123,6 @@ option("operation","delete"). // this means will delete  data in df
 
 df.readStream.format("org.apache.spark.sql.delta.sources.MLSQLDeltaDataSource").load("/tmp/delta-table1")
 
-
 ```
 
 when `idCols` and `operation` is not configured, then we will execute normal Append/Overwrite operation.
@@ -49,9 +131,23 @@ If you have `idCols`, `operation` both setup and operation equal to `delete`, th
 
 
 > Notice that if the data which will be written to the delta table have duplicate records, delta-plus will throw exception
-by default. If you wanna do deduplicating, set `dropDuplicate` as true. 
+by default. If you wanna do deduplicating, set `dropDuplicate` as true.
 
-Spark Code for Compaction:
+MLSQL: 
+
+```sql
+save append table1  
+as rate.`mysql_{db}.{table}` 
+options mode="Append"
+and idCols="id"
+and duration="5"
+and syncType="binlog"
+and checkpointLocation="/tmp/cpl-binlog2";
+```
+
+## CompactionSupport
+
+DataFrame:
 
 ```scala
 
@@ -64,7 +160,8 @@ val optimizeTableInDelta = CompactTableInDelta(log,
 val items = optimizeTableInDelta.run(df.sparkSession)
 
 ```
-MLSQL Code for Compaction:
+
+MLSQL:
 
 ```sql
 -- compact table1 files before version 10, and make 
@@ -75,27 +172,6 @@ MLSQL Code for Compaction:
 You can use `!delta history /delta/table1;` to get the history of the table.
 
 
-MLSQL Code for binlog sync:
-
-```sql
--- binlogRate can be used to as the sinker of spark binlog datasource.
--- It supports multi table sync at one time.
-save append table1  
-as binlogRate.`/tmp/binlog1/{db}/{table}` 
-options mode="Append"
-and idCols="id"
-and duration="5"
-and checkpointLocation="/tmp/cpl-binlog2";
-
--- if used in stream, please use rate instead of delta.
-load delta.`/tmp/table1` as table1;
-
-```  
-
-`binlogRate` is a new datasource which can write multi delta table from [binlog table](https://github.com/allwefantasy/spark-binlog) in stream job.
-It can only be used in MLSQL for now. 
-
-[MLSQL Example](http://docs.mlsql.tech/en/guide/stream/binlog.html) 
 
 
 
