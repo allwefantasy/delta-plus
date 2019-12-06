@@ -45,7 +45,7 @@ option("userName","xxxxx").
 option("password","xxxxx").
 option("databaseNamePattern","mlsql_console").
 option("tableNamePattern","script_file").
-option("bingLogNamePrefix","mysql-bi-bin")
+option("bingLogNamePrefix","mysql-bin")
 optioin("binlogIndex","4").
 optioin("binlogFileOffset","4").
 load()
@@ -107,7 +107,8 @@ as rep_script_file;
 save overwrite rep_script_file as delta.`mysql_mlsql_console.script_file` ;
 
 load delta.`mysql_mlsql_console.script_file`  as output;
-```
+```  
+
 
 ## Upsert/Delete Support
 
