@@ -130,8 +130,8 @@ val spark = SparkSession.builder()
 val mysqlConf = Map(
   "url" -> "jdbc:mysql://localhost:3306/mlsql_console?characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&tinyInt1isBit=false",
   "driver" -> "com.mysql.jdbc.Driver",
-  "user" -> "root",
-  "password" -> "123456",
+  "user" -> "xxxxx",
+  "password" -> "xxxxxx",
   "dbtable" -> "script_file"
 )
 
