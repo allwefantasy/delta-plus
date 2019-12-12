@@ -19,7 +19,7 @@ You can link against this library in your program at the following coordinates:
 ```sql
 groupId: tech.mlsql
 artifactId: delta-plus_2.11
-version: 0.2.0-SNAPSHOT
+version: 0.2.0
 ```
 
 ## Limitation
