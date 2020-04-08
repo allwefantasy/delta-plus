@@ -3,7 +3,6 @@ package org.apache.spark.sql.delta.commands
 import net.sf.json.{JSONArray, JSONObject}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.expressions.JsonToStructs
-import org.apache.spark.sql.catalyst.parser.LegacyTypeStringParser
 import org.apache.spark.sql.delta.{DeltaLog, DeltaOptions, MLSQLMultiDeltaOptions, TableMetaInfo}
 import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.{Column, Dataset, Row, SaveMode, functions => F}
@@ -86,7 +85,7 @@ object BinlogSyncToDelta extends DeltaCommandsFun {
           }
 
           def deserializeSchema(json: String): StructType = {
-            Try(DataType.fromJson(json)).getOrElse(LegacyTypeStringParser.parse(json)) match {
+            Try(DataType.fromJson(json)).get match {
               case t: StructType => t
               case _ => throw new RuntimeException(s"Failed parsing StructType: $json")
             }

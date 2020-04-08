@@ -6,7 +6,7 @@
 
     <groupId>tech.mlsql</groupId>
     <artifactId>delta-plus_2.11</artifactId>
-    <version>0.3.0-SNAPSHOT</version>
+    <version>0.2.0</version>
     <name>Delta Plus</name>
     <url>https://github.com/allwefantasy/delta-plus.git</url>
     <description>
@@ -52,9 +52,10 @@
         <guava.version>16.0</guava.version>
         <httpclient.version>4.5.3</httpclient.version>
 
-        <serviceframework.version>2.0.0</serviceframework.version>
         <scope>provided</scope>
         <hadoop-client-version>2.6.5</hadoop-client-version>
+        <common-utils-version>0.2.9</common-utils-version>
+        <serviceframework.version>2.0.6</serviceframework.version>
     </properties>
 
     <dependencies>
@@ -62,7 +63,7 @@
         <dependency>
             <groupId>io.delta</groupId>
             <artifactId>delta-core_${scala.binary.version}</artifactId>
-            <version>0.4.0</version>
+            <version>0.5.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.scala-lang</groupId>
@@ -74,7 +75,7 @@
         <dependency>
             <groupId>tech.mlsql</groupId>
             <artifactId>common-utils_${scala.binary.version}</artifactId>
-            <version>0.2.0</version>
+            <version>${common-utils-version}</version>
         </dependency>
 
         <dependency>
@@ -130,12 +131,6 @@
             <version>${spark.version}</version>
             <scope>${scope}</scope>
         </dependency>
-        <dependency>
-            <groupId>org.apache.spark</groupId>
-            <artifactId>spark-streaming-kafka-0-8_${scala.binary.version}</artifactId>
-            <version>${spark.version}</version>
-            <scope>${scope}</scope>
-        </dependency>
 
         <dependency>
             <groupId>org.apache.spark</groupId>
@@ -178,6 +173,39 @@
     </dependencies>
 
     <profiles>
+
+        <profile>
+            <id>scala-2.11</id>
+            <properties>
+                <scala.version>2.11.8</scala.version>
+                <scala.binary.version>2.11</scala.binary.version>
+                <scala.jline.version>2.11.8</scala.jline.version>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>scala-2.12</id>
+            <properties>
+                <scala.version>2.12.8</scala.version>
+                <scala.binary.version>2.12</scala.binary.version>
+                <scala.jline.version>2.12.8</scala.jline.version>
+            </properties>
+        </profile>
+        <profile>
+            <id>spark-2.4</id>
+            <properties>
+                <spark.version>2.4.5</spark.version>
+                <spark.bigversion>2.4</spark.bigversion>
+            </properties>
+        </profile>
+        <profile>
+            <id>spark-3.0</id>
+            <properties>
+                <spark.version>3.0.0-preview2</spark.version>
+                <spark.bigversion>3.0</spark.bigversion>
+            </properties>
+        </profile>
+
         <profile>
             <id>disable-java8-doclint</id>
             <activation>
