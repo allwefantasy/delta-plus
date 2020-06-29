@@ -54,7 +54,7 @@
 
         <scope>provided</scope>
         <hadoop-client-version>2.6.5</hadoop-client-version>
-        <common-utils-version>0.2.9</common-utils-version>
+        <common-utils-version>0.3.5</common-utils-version>
         <serviceframework.version>2.0.6</serviceframework.version>
     </properties>
 
@@ -173,38 +173,6 @@
     </dependencies>
 
     <profiles>
-
-        <profile>
-            <id>scala-2.11</id>
-            <properties>
-                <scala.version>2.11.8</scala.version>
-                <scala.binary.version>2.11</scala.binary.version>
-                <scala.jline.version>2.11.8</scala.jline.version>
-            </properties>
-        </profile>
-
-        <profile>
-            <id>scala-2.12</id>
-            <properties>
-                <scala.version>2.12.8</scala.version>
-                <scala.binary.version>2.12</scala.binary.version>
-                <scala.jline.version>2.12.8</scala.jline.version>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-2.4</id>
-            <properties>
-                <spark.version>2.4.5</spark.version>
-                <spark.bigversion>2.4</spark.bigversion>
-            </properties>
-        </profile>
-        <profile>
-            <id>spark-3.0</id>
-            <properties>
-                <spark.version>3.0.0-preview2</spark.version>
-                <spark.bigversion>3.0</spark.bigversion>
-            </properties>
-        </profile>
 
         <profile>
             <id>disable-java8-doclint</id>
