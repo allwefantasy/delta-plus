@@ -47,7 +47,6 @@
 
         <spark.version>2.4.3</spark.version>
         <spark.bigversion>2.4</spark.bigversion>
-        <mlsql.version>1.2.0</mlsql.version>
 
         <guava.version>16.0</guava.version>
         <httpclient.version>4.5.3</httpclient.version>
