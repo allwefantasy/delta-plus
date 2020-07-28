@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>tech.mlsql</groupId>
-    <artifactId>delta-plus_2.11</artifactId>
+    <artifactId>delta-plus_2.12</artifactId>
     <version>0.2.0</version>
     <name>Delta Plus</name>
     <url>https://github.com/allwefantasy/delta-plus.git</url>
@@ -41,19 +41,18 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <scala.version>2.11.8</scala.version>
-        <scala.binary.version>2.11</scala.binary.version>
-        <scala.jline.version>2.11.0-M3</scala.jline.version>
+        <scala.version>2.12.10</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
 
-        <spark.version>2.4.3</spark.version>
-        <spark.bigversion>2.4</spark.bigversion>
+        <spark.version>3.0.0</spark.version>
+        <spark.bigversion>3.0</spark.bigversion>
 
         <guava.version>16.0</guava.version>
         <httpclient.version>4.5.3</httpclient.version>
 
         <scope>provided</scope>
         <hadoop-client-version>2.6.5</hadoop-client-version>
-        <common-utils-version>0.3.5</common-utils-version>
+        <common-utils-version>0.3.6</common-utils-version>
         <serviceframework.version>2.0.6</serviceframework.version>
     </properties>
 
@@ -62,7 +61,7 @@
         <dependency>
             <groupId>io.delta</groupId>
             <artifactId>delta-core_${scala.binary.version}</artifactId>
-            <version>0.5.0</version>
+            <version>0.6.0</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.scala-lang</groupId>
