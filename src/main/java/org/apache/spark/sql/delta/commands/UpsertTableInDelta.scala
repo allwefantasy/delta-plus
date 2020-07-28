@@ -199,7 +199,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
         snapshot.allFiles
       case Some(predicates) =>
         DeltaLog.filterFileList(
-          metadata.partitionColumns, snapshot.allFiles.toDF(), predicates).as[AddFile]
+          metadata.partitionSchema, snapshot.allFiles.toDF(), predicates).as[AddFile]
     }
 
 

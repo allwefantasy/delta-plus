@@ -244,7 +244,7 @@ case class CompactTableInDelta(
         snapshot.allFiles
       case Some(predicates) =>
         DeltaLog.filterFileList(
-          metadata.partitionColumns, snapshot.allFiles.toDF(), predicates).as[AddFile]
+          metadata.partitionSchema, snapshot.allFiles.toDF(), predicates).as[AddFile]
     }
 
 
@@ -269,7 +269,7 @@ case class CompactTableInDelta(
 
       val invariants = Invariants.getFromSchema(metadata.schema, spark)
 
-      SQLExecution.withNewExecutionId(spark, queryExecution) {
+      SQLExecution.withNewExecutionId(queryExecution) {
         val outputSpec = FileFormatWriter.OutputSpec(
           outputPath.toString,
           Map.empty,

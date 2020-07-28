@@ -40,7 +40,8 @@ trait DeltaCommandsFun {
           val resolvedEncoder = encoder.resolveAndBind(
             data.logicalPlan.output,
             data.sparkSession.sessionState.analyzer)
-          val rdd = data.queryExecution.toRdd.map(resolvedEncoder.fromRow)(encoder.clsTag)
+          val fromRow = resolvedEncoder.createDeserializer()
+          val rdd = data.queryExecution.toRdd.map[T](fromRow)(encoder.clsTag)
           val ds = data.sparkSession.createDataset(rdd)(encoder)
           ds
         }
