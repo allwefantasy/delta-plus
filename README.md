@@ -14,13 +14,26 @@ This library requires Spark 2.4+ (tested) and Delta 0.4.0.
 ## Linking 
 You can link against this library in your program at the following coordinates:
 
-### Scala 2.11
+### Scala 2.11/Spark 2.4.3
 
 ```sql
 groupId: tech.mlsql
 artifactId: delta-plus_2.11
-version: 0.2.0
+version: 0.4.0
 ```
+
+### Scala 2.12/Spark3.0.0
+
+```sql
+groupId: tech.mlsql
+artifactId: delta-plus_2.12
+version: 0.4.0
+```
+
+## ChangeLog
+
+### 0.4.0
+1. fix issue if idCols is not the first columns, the schema will be changed.
 
 ## Limitation
 
