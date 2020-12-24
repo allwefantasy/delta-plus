@@ -9,7 +9,7 @@ A library based on delta for Spark and [MLSQL](http://www.mlsql.tech).
 
 ## Requirements
 
-This library requires Spark 2.4+ (tested) and Delta 0.4.0.
+This library requires Spark 2.4+ (tested) and Delta 0.5.0(for spark 2.4.x)/0.7.0(for spark 3.0.x).
 
 ## Linking 
 You can link against this library in your program at the following coordinates:
