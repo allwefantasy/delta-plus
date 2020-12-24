@@ -152,7 +152,9 @@ case class UpsertTableInDelta(_data: Dataset[_],
       val newFiles = if (!isDelete) {
         txn.writeFiles(data.repartition(1), Some(options))
       } else Seq()
-      upsertBF.generateBFForParquetFile(sourceSchema, newFiles, Seq())
+      if(upsertConf.isBloomFilterEnable){
+        upsertBF.generateBFForParquetFile(sourceSchema, newFiles, Seq())
+      }
       return newFiles
     }
 
@@ -254,8 +256,9 @@ case class UpsertTableInDelta(_data: Dataset[_],
     if (upsertConf.isPartialMerge) {
       // new data format: {IDs... value:...}  value should be JSon/StructType,so we can merge it into table
       // the order of fields are important
+      //这里会导致schema被修改
       val newDF = affectedRecords.join(data,
-        usingColumns = idColsList, joinType = "fullOuter")
+        usingColumns = idColsList, joinType = "fullOuter").select(sourceSchema.fields.map(field=>F.col(field.name)):_*)
       val sourceLen = sourceSchema.fields.length
       val sourceSchemaSeq = sourceSchema.map(f => f.name)
       val targetSchemaSeq = data.schema.map(f => f.name)
@@ -292,9 +295,11 @@ case class UpsertTableInDelta(_data: Dataset[_],
       newFiles ++ deletedFiles
 
     } else {
+      //这里会导致schema被修改
       var notChangedRecords = affectedRecords.join(data,
         usingColumns = idColsList, joinType = "leftanti").
-        drop(F.col(UpsertTableInDelta.FILE_NAME))
+        drop(F.col(UpsertTableInDelta.FILE_NAME)).select(sourceSchema.fields.map(field=>F.col(field.name)):_*)
+
 
       val newFiles = if (isDelete) {
         if (configuration.contains(UpsertTableInDelta.FILE_NUM)) {
