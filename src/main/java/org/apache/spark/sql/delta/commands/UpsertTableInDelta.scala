@@ -313,7 +313,7 @@ case class UpsertTableInDelta(_data: Dataset[_],
           txn.writeFiles(notChangedRecords, Some(options))
         } else Seq[AddFile]()
       } else {
-        var newTempData = data.toDF().union(notChangedRecords)
+        var newTempData = data.toDF().unionByName(notChangedRecords)
         val finalNumIfKeepFileNum = if (deletedFiles.size == 0) 1 else deletedFiles.size
         newTempData = if (upsertConf.keepFileNum()) newTempData.repartitionByRange(finalNumIfKeepFileNum, upsertConf.toIdCols: _*) else newTempData
         txn.writeFiles(newTempData, Some(options))
